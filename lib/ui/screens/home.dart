@@ -29,15 +29,13 @@ class UserHomeScreen extends StatefulWidget {
 }
 
 class _UserHomeScreenState extends State<UserHomeScreen> {
-  // default values
-  int animationDuration = 1;
+  final int animationDuration = 1;
   double coinWidth = 160.0;
   double coinLabelFontSize = 14.0;
   double coinNumberFontSize = 60.0;
   double coinOutlineWidth = 8.0;
-  FontWeight digitFontWeight = FontWeight.w600;
-  FontWeight coinLabelWeight = FontWeight.w600;
-  GenesisData? genesisData;
+  final FontWeight digitFontWeight = FontWeight.w600;
+  final FontWeight coinLabelWeight = FontWeight.w600;
 
   @override
   void initState() {
@@ -52,13 +50,12 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
       coinOutlineWidth = 4.0;
     }
 
-    debugPrint(height.toString());
-
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _postFrameCallback(context));
   }
 
   void _postFrameCallback(BuildContext context) {
+    debugPrint("UserHomeScreen._postFrameCallback");
     Future.delayed(Duration.zero, () async {
       if (appState.signedUpInCurentSession.value && mounted) {
         appState.signedUpInCurentSession.value = false;
@@ -87,38 +84,17 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
         }
         return;
       }
-
-      try {
-        GetGenesisDataResponse resp =
-            await api.apiServiceClient.getGenesisData(GetGenesisDataRequest());
-        setState(() {
-          genesisData = resp.genesisData;
-          if (!accountLogic.karmaMiningScreenDisplayed.value) {
-            if (!context.mounted) return;
-            Navigator.of(context).push(
-              CupertinoPageRoute(
-                fullscreenDialog: true,
-                builder: ((context) => const AboutKarmaMining()),
-              ),
-            );
-          }
-        });
-
-        // todo: update genesis data
-      } catch (e) {
-        debugPrint('Can\'t get genesis data from api: $e');
-        if (context.mounted) {
-          StatusAlert.show(context,
-              duration: const Duration(seconds: 4),
-              title: 'Ooops',
-              subtitle: 'Karma Coin server down.',
-              configuration: const IconConfiguration(
-                  icon: CupertinoIcons.exclamationmark_triangle),
-              dismissOnBackgroundTap: true,
-              maxWidth: statusAlertWidth);
-        }
-      }
     });
+
+    if (!accountLogic.karmaMiningScreenDisplayed.value) {
+      if (!context.mounted) return;
+      Navigator.of(context).push(
+        CupertinoPageRoute(
+          fullscreenDialog: true,
+          builder: ((context) => const AboutKarmaMining()),
+        ),
+      );
+    }
   }
 
   Widget _getAppreciationListener(BuildContext context) {
@@ -159,7 +135,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                 if (mounted) {
                   StatusAlert.show(
                     context,
-                    duration: const Duration(seconds: 2),
+                    duration: const Duration(seconds: 4),
                     configuration: const IconConfiguration(
                         icon: CupertinoIcons.check_mark_circled),
                     title: sentTitle,
@@ -283,21 +259,20 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       FittedBox(
-                          child: Countup(
-                        begin: 0,
-                        end: value.toDouble(),
-                        duration: Duration(seconds: animationDuration),
-                        separator: ',',
-                        style: CupertinoTheme.of(context)
-                            .textTheme
-                            .textStyle
-                            .merge(
-                              TextStyle(
-                                  fontSize: coinNumberFontSize,
-                                  color: const Color.fromARGB(255, 255, 184, 0),
-                                  fontWeight: digitFontWeight),
-                            ),
-                      )),
+                        child: Text(
+                          value.toString(),
+                          style: CupertinoTheme.of(context)
+                              .textTheme
+                              .textStyle
+                              .merge(
+                                TextStyle(
+                                    fontSize: coinNumberFontSize,
+                                    color:
+                                        const Color.fromARGB(255, 255, 184, 0),
+                                    fontWeight: digitFontWeight),
+                              ),
+                        ),
+                      ),
                       Text(
                         'KARMA SCORE',
                         style: CupertinoTheme.of(context)
@@ -356,21 +331,20 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       FittedBox(
-                          child: Countup(
-                        begin: 0,
-                        end: dispValue,
-                        duration: Duration(seconds: animationDuration),
-                        separator: ',',
-                        style: CupertinoTheme.of(context)
-                            .textTheme
-                            .textStyle
-                            .merge(
-                              TextStyle(
-                                  fontSize: coinNumberFontSize,
-                                  color: const Color.fromARGB(255, 255, 184, 0),
-                                  fontWeight: digitFontWeight),
-                            ),
-                      )),
+                        child: Text(
+                          dispValue.toString(),
+                          style: CupertinoTheme.of(context)
+                              .textTheme
+                              .textStyle
+                              .merge(
+                                TextStyle(
+                                    fontSize: coinNumberFontSize,
+                                    color:
+                                        const Color.fromARGB(255, 255, 184, 0),
+                                    fontWeight: digitFontWeight),
+                              ),
+                        ),
+                      ),
                       Text(
                         labelText,
                         style: CupertinoTheme.of(context)
