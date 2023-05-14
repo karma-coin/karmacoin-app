@@ -19,7 +19,7 @@ class KarmaCoinApp extends StatelessWidget with GetItMixin {
         [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown]);
 
     final Brightness platformBrightness =
-        WidgetsBinding.instance.window.platformBrightness;
+        WidgetsBinding.instance.platformDispatcher.platformBrightness;
 
     // Theme is used below to have the Material widgets theme adapt to platform brightness
 
@@ -34,7 +34,6 @@ class KarmaCoinApp extends StatelessWidget with GetItMixin {
                 scrollBehavior: MouseDragScrollBehavior(),
                 routerConfig: appRouter,
                 debugShowCheckedModeBanner: false,
-                useInheritedMediaQuery: true,
                 title: 'Karma Coin',
                 theme: const CupertinoThemeData(
                   primaryColor: CupertinoColors.activeOrange,
