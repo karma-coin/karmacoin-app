@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
@@ -130,7 +131,7 @@ class ConfigLogic {
         debugPrint('User not found in firestore. creating record...');
 
         await fireStore.collection('users').doc(userId).set({
-          'tokens': FieldValue.arrayUnion([data]),
+          'tokens': [data],
           'accountId': karmaUser.userData.accountId.data.toBase64(),
           'phoneNumber': karmaUser.userData.mobileNumber.number,
           'userName': karmaUser.userData.userName,
@@ -146,7 +147,6 @@ class ConfigLogic {
           String? aToken = tokenData['token'];
           if (token == aToken) {
             debugPrint('Token already stored in cloud firestore');
-
             tokenData['timeStamp'] = data['timeStamp'];
             await fireStore.collection('users').doc(userId).update({
               'tokens': tokens,
@@ -158,7 +158,7 @@ class ConfigLogic {
 
         // token not in fire store - add it...
         await fireStore.collection('users').doc(userId).update({
-          'tokens': FieldValue.arrayUnion([token]),
+          'tokens': FieldValue.arrayUnion([data]),
         });
 
         debugPrint("Added token to firestore");
@@ -204,9 +204,21 @@ class ConfigLogic {
     }
   }
 
-  /// Handle a received push notificaiton
+  /// Handle a received push note
   void _handleMessage(RemoteMessage message) {
     debugPrint('Got push notification: $message');
-    // todo: implement me
+    Future.delayed(Duration.zero, () async {
+      await FirebaseAnalytics.instance.logEvent(name: "push_note_received");
+
+      if (accountLogic.karmaCoinUser.value != null) {
+        // fetch transactions so we have the latest data
+        await txsBoss.fetchTransactions();
+        if (message.data["type"] == "payment") {
+          if (appRouter.location != ScreenPaths.appreciations) {
+            appRouter.push(ScreenPaths.appreciations);
+          }
+        }
+      }
+    });
   }
 }
