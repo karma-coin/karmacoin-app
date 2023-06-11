@@ -106383,45 +106383,45 @@ r.a.Kp(5)
 return A.b1f(b,r.fg(),new Uint8Array(A.cw(s.a.a3(4).a.a3(1))))}}
 A.FB.prototype={}
 A.yT.prototype={
-eU(){var s=0,r=A.z(t.H),q=this,p,o,n,m,l,k,j,i,h,g,f,e
-var $async$eU=A.v(function(a,b){if(a===1)return A.w(b,r)
+eU(){var s=0,r=A.z(t.H),q=this,p,o,n,m,l,k,j,i,h,g,f,e,d,c
+var $async$eU=A.v(function(a,a0){if(a===1)return A.w(a0,r)
 while(true)switch(s){case 0:A.a6().$1("initalizing account logic...")
 s=2
 return A.q(B.aq.n8(0,B.ao,"seed"),$async$eU)
-case 2:p=b
+case 2:n=a0
 s=3
 return A.q(B.aq.n8(0,B.ao,"seed_security_words"),$async$eU)
-case 3:o=b
-s=p!=null&&o!=null?4:6
+case 3:m=a0
+s=n!=null&&m!=null?4:6
 break
 case 4:A.a6().$1("got keyPair from secure local store...")
-q.ZO(new Uint8Array(A.cw(B.dx.bj(p))))
-q.a.sm(0,o)
+q.ZO(new Uint8Array(A.cw(B.dx.bj(n))))
+q.a.sm(0,m)
 s=7
 return A.q(B.aq.n8(0,B.ao,"local_mode"),$async$eU)
-case 7:n=b
-if(n!=null)q.r.sm(0,n.toLowerCase()==="true")
+case 7:l=a0
+if(l!=null)q.r.sm(0,l.toLowerCase()==="true")
 s=8
 return A.q(B.aq.n8(0,B.ao,"display_karma_mining_screen"),$async$eU)
-case 8:m=b
-if(m!=null)q.e.sm(0,m.toLowerCase()==="true")
+case 8:k=a0
+if(k!=null)q.e.sm(0,k.toLowerCase()==="true")
 s=9
 return A.q(B.aq.n8(0,B.ao,"karma_coin_user"),$async$eU)
-case 9:l=b
-s=l!=null?10:12
+case 9:j=a0
+s=j!=null?10:12
 break
 case 10:A.a6().$1("loading karma coin user from secure local store...")
-k=B.dx.bj(l)
-j=A.b5_()
-j.ed(k,B.ag)
-k=q.f
-k.sm(0,A.bbm(j))
+i=B.dx.bj(j)
+h=A.b5_()
+h.ed(i,B.ag)
+i=q.f
+i.sm(0,A.bbm(h))
 s=13
-return A.q(k.a.wY(j,!1),$async$eU)
+return A.q(i.a.wY(h,!1),$async$eU)
 case 13:s=14
 return A.q(q.nN(),$async$eU)
 case 14:s=15
-return A.q($.aB().T(0,t.c).m2(k.a.a.a.a3(0).a.a3(0)),$async$eU)
+return A.q($.aB().T(0,t.c).m2(i.a.a.a.a3(0).a.a3(0)),$async$eU)
 case 15:A.a6().$1("Local mode: "+A.h(q.r.a)+". Signed up on chain: "+A.h(q.c.a)+".")
 s=11
 break
@@ -106429,28 +106429,29 @@ case 12:A.a6().$1("karma coin user not found in secure local store.")
 case 11:s=5
 break
 case 6:A.a6().$1("seed and security words not found in secure local store.")
-case 5:e=q.d
+case 5:c=q.d
 s=16
 return A.q(B.aq.n8(0,B.ao,"requested_user_name"),$async$eU)
-case 16:e.sm(0,b)
-e=q.w
+case 16:c.sm(0,a0)
+c=q.w
 s=17
 return A.q(B.aq.n8(0,B.ao,"phone_number"),$async$eU)
-case 17:e.sm(0,b)
+case 17:c.sm(0,a0)
 s=18
 return A.q(B.aq.n8(0,B.ao,"user_signed_up"),$async$eU)
-case 18:i=b
-if(i!=null)q.c.sm(0,i.toLowerCase()==="true")
+case 18:g=a0
+if(g!=null)q.c.sm(0,g.toLowerCase()==="true")
 s=19
 return A.q(B.aq.n8(0,B.ao,"verification_data"),$async$eU)
-case 19:h=b
-if(h!=null){k=B.dx.bj(h)
-g=A.bej()
-g.ed(k,B.ag)
-q.Q=g}s=20
+case 19:p=a0
+if(p!=null)try{i=B.dx.bj(p)
+f=A.bej()
+f.ed(i,B.ag)
+q.Q=f}catch(b){o=A.aa(b)
+A.a6().$1("failed to parse verification data: "+A.h(o))}s=20
 return A.q(B.aq.n8(0,B.ao,"fcm_token"),$async$eU)
-case 20:f=b
-if(f!=null)q.x.sm(0,f)
+case 20:d=a0
+if(d!=null)q.x.sm(0,d)
 q.asj()
 q.asi()
 return A.x(null,r)}})
@@ -108098,8 +108099,10 @@ $2(a,b){var s=A.b4A(B.aD.vv(0,b,null))
 this.a.cx.p(0,a,s)},
 $S:37}
 A.aJt.prototype={
-$2(a,b){var s=A.b4A(B.aD.vv(0,b,null))
-this.a.db.p(0,a,s)},
+$2(a,b){var s,r,q
+try{s=A.b4A(B.aD.vv(0,b,null))
+this.a.db.p(0,a,s)}catch(q){r=A.aa(q)
+A.a6().$1("failed to parse signup tx from json: "+A.h(r))}},
 $S:37}
 A.aJu.prototype={
 $2(a,b){var s=this.a.w.a,r=A.be8()
