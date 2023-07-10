@@ -75,7 +75,6 @@ class _ActionsScreenState extends State<ActionsScreen> {
             CupertinoListTile.notched(
                 title: const Text('Karma Rewards'),
                 leading: const Icon(CupertinoIcons.wand_rays, size: 28),
-                trailing: const CupertinoListTileChevron(),
                 onTap: () {
                   if (!context.mounted) return;
                   Navigator.of(context).push(
@@ -144,12 +143,6 @@ class _ActionsScreenState extends State<ActionsScreen> {
           CupertinoListTile.notched(
             title: const Text('Change Phone Number'),
             leading: const Icon(CupertinoIcons.phone, size: 28),
-            trailing: const CupertinoListTileChevron(),
-            onTap: () => {},
-          ),
-          CupertinoListTile.notched(
-            title: const Text('Account Operations'),
-            leading: const Icon(CupertinoIcons.doc, size: 28),
             trailing: const CupertinoListTileChevron(),
             onTap: () => {},
           ),
