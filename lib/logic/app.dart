@@ -84,6 +84,7 @@ class AppLogic with AppLogicInterface {
     GetIt.I.registerLazySingleton<TransactionsBossInterface>(
         () => TransactionsBoss());
     GetIt.I.registerLazySingleton<AppState>(() => AppState());
+    
   }
 
   /// Initialize the app and singleton services
