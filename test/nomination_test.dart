@@ -6,12 +6,12 @@ import 'package:karma_coin/common_libs.dart';
 import 'package:karma_coin/data/genesis_config.dart';
 import 'package:karma_coin/logic/identity.dart';
 import 'package:karma_coin/logic/identity_interface.dart';
-import 'package:karma_coin/services/v2.0/kc2.dart';
-import 'package:karma_coin/services/v2.0/kc2_service.dart';
-import 'package:karma_coin/services/v2.0/nomination_pools/types.dart';
+import 'package:karma_coin/services/v2.0/kc2_service_interface.dart';
+import 'package:karma_coin/logic/verifier.dart';
+import 'package:karma_coin/services/v2.0/nomination_pools/interfaces.dart';
+import 'package:karma_coin/services/v2.0/user_info.dart';
 
-final random = Random.secure();
-String get randomPhoneNumber => (random.nextInt(900000) + 100000).toString();
+import 'utils.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -21,9 +21,11 @@ void main() {
   GetIt.I.registerLazySingleton<KarmachainService>(() => KarmachainService());
   GetIt.I.registerLazySingleton<K2ServiceInterface>(
       () => GetIt.I.get<KarmachainService>());
+  GetIt.I.registerLazySingleton<Verifier>(() => Verifier());
+  GetIt.I.registerLazySingleton<ConfigLogic>(() => ConfigLogic());
 
   group('nomination tests', () {
-    // TODO: add test when user joins a pool and pools nominates the devnet validator
+    // todo: add test when user joins a pool and pools nominates the devnet validator
     // wait an era and verify pool gets rewarded and verify user can withdraw their reward
 
     // This test:
@@ -32,44 +34,35 @@ void main() {
     // 3. Check that callback is called and pool is created
     // 4. Check that pool Katya is a member of the pool
     test(
-      'create a pool',
+      'create pool',
       () async {
-        // TODO: delete all pools so a pool can be created w/o an error on any chain, and add a test for creating a pool when pools are maxed out and verify create fails
+        // todo: delete all pools so a pool can be created w/o an error on any chain, and add a test for creating a pool when pools are maxed out and verify create fails
 
         KarmachainService kc2Service = GetIt.I.get<KarmachainService>();
         // Connect to the chain
         await kc2Service.connectToApi(apiWsUrl: 'ws://127.0.0.1:9944');
 
-        // Create a new identity for local user
-        IdentityInterface katya = Identity();
-        await katya.initNoStorage();
-        String katyaUserName = "Katya${katya.accountId.substring(0, 5)}";
-        String katyaPhoneNumber = randomPhoneNumber;
-        kc2Service.setKeyring(katya.keyring);
-
-        // Assume sign up flow works successfully, just wait to tx complete
-        await kc2Service.newUser(
-            katya.accountId, katyaUserName, katyaPhoneNumber);
-        await Future.delayed(const Duration(seconds: 12));
+        final completer = Completer<bool>();
+        TestUserInfo katya = await createTestUser(completer: completer);
+        await Future.delayed(Duration(seconds: kc2Service.expectedBlockTimeSeconds));
 
         // Test utils
-        final completer = Completer<bool>();
         String txHash = "";
 
         // Create pool callback
         kc2Service.createPoolCallback = (tx) async {
+          if (tx.hash != txHash) {
+            // allow other tests to run in parallel
+            return;
+          }
+
           // Check if the tx failed
-          if (tx.failedReason != null) {
+          if (tx.chainError != null) {
             completer.complete(false);
             return;
           }
 
-          // Check if the tx hash is the same
-          if (tx.hash != txHash) {
-            debugPrint('unexpected tx hash: ${tx.hash} ');
-            completer.complete(false);
-            return;
-          }
+          debugPrint('Pool created.');
 
           // Check if the pool is created
           final pools = await kc2Service.getPools();
@@ -78,6 +71,7 @@ void main() {
           final pool = pools.firstWhere(
               (pool) => pool.roles.depositor == katya.accountId,
               orElse: () => fail('pool not found'));
+
           expect(pool.commission.beneficiary, null);
           expect(pool.commission.current, null);
           expect(pool.commission.max, null);
@@ -85,10 +79,6 @@ void main() {
           expect(pool.commission.throttleFrom, null);
           expect(pool.memberCounter, 1);
           expect(pool.points, GenesisConfig.kCentsPerCoinBigInt);
-
-          // we already test this when getting the pull from pools
-          // expect(pool.roles.depositor, katya.accountId);
-
           expect(pool.roles.root, katya.accountId);
           expect(pool.roles.nominator, katya.accountId);
           expect(pool.roles.bouncer, katya.accountId);
@@ -101,10 +91,30 @@ void main() {
           expect(poolMember!.id, pool.id);
           expect(poolMember.points, BigInt.from(1000000));
 
+          // verify Punch is not a pool member of any pool
+          IdentityInterface punch = Identity();
+          await punch.initNoStorage();
+          try {
+            final result = await kc2Service.getMembershipPool(punch.accountId);
+            expect(result, isNull);
+          } catch (e) {
+            debugPrint('Error getting pool member: $e');
+            completer.complete(false);
+            return;
+          }
+
+          // Verify points-balance ration, default ration 1:1
+          final pointsToBalance = await kc2Service.getPoolsPointsToBalance(
+              pool.id, poolMember.points);
+          final balanceToPoints = await kc2Service.getPoolsBalanceToPoints(
+              pool.id, BigInt.from(1000000));
+          expect(pointsToBalance, BigInt.from(1000000));
+          expect(balanceToPoints, poolMember.points);
+
           completer.complete(true);
         };
 
-        kc2Service.subscribeToAccount(katya.accountId);
+        kc2Service.subscribeToAccountTransactions(katya.userInfo!);
 
         // Create a pool
         txHash = await kc2Service.createPool(
@@ -125,7 +135,7 @@ void main() {
     // 1. Connects to the chain
     // 2. Create pool using Katya account
     // 3. Join the pool using Punch account
-    // 4. Check that both Alice and Bob are members of the pool
+    // 4. Check that both Katya and Punch are members of the pool
     test(
       'join pool',
       () async {
@@ -133,41 +143,24 @@ void main() {
         // Connect to the chain
         await kc2Service.connectToApi(apiWsUrl: 'ws://127.0.0.1:9944');
 
-        // Create a new identity for local user Katya
-        IdentityInterface katya = Identity();
-        await katya.initNoStorage();
-        String katyaUserName = "Katya${katya.accountId.substring(0, 5)}";
-        String katyaPhoneNumber = randomPhoneNumber;
-        // Create a new identity for local user Punch
-        IdentityInterface punch = Identity();
-        await punch.initNoStorage();
-        String punchUserName = "Punch${katya.accountId.substring(0, 5)}";
-        String punchPhoneNumber = randomPhoneNumber;
-
-        kc2Service.setKeyring(katya.keyring);
-        await kc2Service.newUser(
-            katya.accountId, katyaUserName, katyaPhoneNumber);
-        kc2Service.setKeyring(punch.keyring);
-        await kc2Service.newUser(
-            punch.accountId, punchUserName, punchPhoneNumber);
-        await Future.delayed(const Duration(seconds: 12));
-
-        kc2Service.setKeyring(katya.keyring);
-
         final completer = Completer<bool>();
+        TestUserInfo katya = await createTestUser(completer: completer);
+        TestUserInfo punch = await createTestUser(completer: completer);
+        await Future.delayed(Duration(seconds: kc2Service.expectedBlockTimeSeconds));
+
+        // Test utils
+        Timer? blocksProcessingTimer;
         String txHash = "";
 
         // Create pool callback
         kc2Service.createPoolCallback = (tx) async {
-          // Check if the tx failed
-          if (tx.failedReason != null) {
-            completer.complete(false);
+          // Check if the tx hash is the same
+          if (tx.hash != txHash) {
             return;
           }
 
-          // Check if the tx hash is the same
-          if (tx.hash != txHash) {
-            debugPrint('unexpected tx hash: ${tx.hash} ');
+          // Check if the tx failed
+          if (tx.chainError != null) {
             completer.complete(false);
             return;
           }
@@ -178,23 +171,24 @@ void main() {
               .firstWhere((pool) => pool.roles.depositor == katya.accountId);
           final poolId = pool.id;
 
-          // Punch join the pool
-          kc2Service.setKeyring(punch.keyring);
-          txHash = await kc2Service.join(BigInt.from(1000000), poolId);
+          // Unsubscribe from Alice's transactions
+          blocksProcessingTimer?.cancel();
           // Listen to Punch transactions
-          kc2Service.subscribeToAccount(punch.accountId);
+          blocksProcessingTimer =
+              kc2Service.subscribeToAccountTransactions(punch.userInfo!);
+          // Punch join the pool
+          kc2Service.setKeyring(punch.user.keyring);
+          txHash = await kc2Service.joinPool(
+              amount: BigInt.from(1000000), poolId: poolId);
         };
 
         kc2Service.joinPoolCallback = (tx) async {
-          // Check if the tx failed
-          if (tx.failedReason != null) {
-            completer.complete(false);
+          if (tx.hash != txHash) {
             return;
           }
 
-          // Check if the tx hash is the same
-          if (tx.hash != txHash) {
-            debugPrint('unexpected tx hash: ${tx.hash} ');
+          // Check if the tx failed
+          if (tx.chainError != null) {
             completer.complete(false);
             return;
           }
@@ -209,15 +203,22 @@ void main() {
           expect(bobPoolMember!.id, tx.poolId);
           expect(bobPoolMember.points, BigInt.from(1000000));
 
-          // TODO: add a test when user tries to join same pool twice.
+          final poolMembers = await kc2Service.getPoolMembers(tx.poolId);
+          expect(poolMembers.length, 2);
+          expect(poolMembers.contains(katya.accountId), true);
+          expect(poolMembers.contains(punch.accountId), true);
 
-          // TODO: crate a test when user tries to join a pool when he's already a member of another pool.
+          // todo: add a test when user tries to join same pool twice.
+
+          // todo: crate a test when user tries to join a pool when he's already a member of another pool.
 
           completer.complete(true);
         };
 
-        kc2Service.subscribeToAccount(katya.accountId);
+        blocksProcessingTimer =
+            kc2Service.subscribeToAccountTransactions(katya.userInfo!);
 
+        kc2Service.setKeyring(katya.user.keyring);
         // Create a pool
         txHash = await kc2Service.createPool(
             amount: GenesisConfig.kCentsPerCoinBigInt,
@@ -235,6 +236,162 @@ void main() {
     // This test:
     // 1. Connects to the chain
     // 2. Create pool using Katya account
+    // 3. Join the pool using Punch account
+    // 4. Punch unbounds bonded funds
+    // 5. After an era, punch withdraws unbounded funds and leaves the pool
+    test(
+      'leave pool',
+      () async {
+        KarmachainService kc2Service = GetIt.I.get<KarmachainService>();
+        // Connect to the chain
+        await kc2Service.connectToApi(apiWsUrl: 'ws://127.0.0.1:9944');
+
+        final completer = Completer<bool>();
+        TestUserInfo katya = await createTestUser(completer: completer);
+        TestUserInfo punch = await createTestUser(completer: completer);
+        await Future.delayed(
+            Duration(seconds: kc2Service.expectedBlockTimeSeconds));
+
+        // Test utils
+        Timer? blocksProcessingTimer;
+        String txHash = "";
+        BigInt? balance;
+
+        final bondAmount = BigInt.from(1000000);
+
+        // Create pool callback
+        kc2Service.createPoolCallback = (tx) async {
+          // Check if the tx hash is the same
+          if (tx.hash != txHash) {
+            return;
+          }
+
+          // Check if the tx failed
+          if (tx.chainError != null) {
+            completer.complete(false);
+            return;
+          }
+
+          // Find pool id
+          final pools = await kc2Service.getPools();
+          final pool = pools
+              .firstWhere((pool) => pool.roles.depositor == katya.accountId);
+          final poolId = pool.id;
+
+          // Unsubscribe from Alice's transactions
+          blocksProcessingTimer?.cancel();
+          // Listen to Punch transactions
+          blocksProcessingTimer =
+              kc2Service.subscribeToAccountTransactions(punch.userInfo!);
+          // Punch join the pool
+          kc2Service.setKeyring(punch.user.keyring);
+          txHash =
+              await kc2Service.joinPool(amount: bondAmount, poolId: poolId);
+        };
+
+        kc2Service.joinPoolCallback = (tx) async {
+          if (tx.hash != txHash) {
+            return;
+          }
+
+          // Check if the tx failed
+          if (tx.chainError != null) {
+            completer.complete(false);
+            return;
+          }
+
+          // Check if the pool member is created correctly
+          final katyaPoolMember =
+              await kc2Service.getMembershipPool(katya.accountId);
+          expect(katyaPoolMember!.id, tx.poolId);
+          expect(katyaPoolMember.points, GenesisConfig.kCentsPerCoinBigInt);
+          PoolMember? punchPoolMember =
+              await kc2Service.getMembershipPool(punch.accountId);
+          expect(punchPoolMember, isNotNull);
+          expect(punchPoolMember!.id, tx.poolId);
+          expect(punchPoolMember.points, bondAmount);
+
+          final poolMembers = await kc2Service.getPoolMembers(tx.poolId);
+          expect(poolMembers.length, 2);
+          expect(poolMembers.contains(katya.accountId), true);
+          expect(poolMembers.contains(punch.accountId), true);
+
+          KC2UserInfo? punchInfo =
+              await kc2Service.getUserInfoByAccountId(punch.accountId);
+
+          balance = punchInfo!.balance;
+
+          // step 1 - punch unbounds all pimts
+          debugPrint('Calling unbound...');
+          txHash = await kc2Service.unbond(punch.accountId, punchPoolMember.points);
+        };
+
+        kc2Service.unbondPoolCallback = (tx) async {
+          if (tx.hash != txHash) {
+            return;
+          }
+          // Check if the tx failed
+          if (tx.chainError != null) {
+            completer.complete(false);
+            return;
+          }
+
+          PoolMember? punchPoolMember = await kc2Service.getMembershipPool(punch.accountId);
+          expect(punchPoolMember, isNotNull);
+          expect(punchPoolMember!.points, BigInt.zero);
+
+          // step 2 - wait 1 era and call withdraw unbound
+          debugPrint(
+              'Waiting 1 era... ${kc2Service.eraTimeSeconds} seconds');
+          await Future.delayed(
+              Duration(seconds: kc2Service.eraTimeSeconds));
+          debugPrint('Calling withdraw unbound...');
+          txHash = await kc2Service.withdrawUnbonded(punch.accountId);
+        };
+
+        kc2Service.withdrawUnbondedPoolCallback = (tx) async {
+          if (tx.hash != txHash) {
+            return;
+          }
+          // Check if the tx failed
+          if (tx.chainError != null) {
+            completer.complete(false);
+            return;
+          }
+
+          PoolMember? punchPoolMember = await kc2Service.getMembershipPool(punch.accountId);
+          expect(punchPoolMember, isNull,
+              reason: 'expected punch to be removed from pool');
+          KC2UserInfo? info =
+          await kc2Service.getUserInfoByAccountId(punch.accountId);
+          expect(balance, isNotNull);
+          expect(info!.balance == balance! + bondAmount, isTrue,
+              reason: 'Expected refund');
+
+          completer.complete(true);
+        };
+
+        blocksProcessingTimer =
+            kc2Service.subscribeToAccountTransactions(katya.userInfo!);
+        kc2Service.setKeyring(katya.user.keyring);
+
+        // Create a pool
+        txHash = await kc2Service.createPool(
+            amount: GenesisConfig.kCentsPerCoinBigInt,
+            root: katya.accountId,
+            nominator: katya.accountId,
+            bouncer: katya.accountId);
+
+        // Wait for completer and verify test success
+        expect(await completer.future, equals(true));
+        expect(completer.isCompleted, isTrue);
+      },
+      timeout: const Timeout(Duration(seconds: 560)),
+    );
+
+    // This test:
+    // 1. Connects to the chain
+    // 2. Create pool using Katya account
     // 3. Set pool commission
     // 4. Check that commission is set correctly
     test(
@@ -244,33 +401,21 @@ void main() {
         // Connect to the chain
         await kc2Service.connectToApi(apiWsUrl: 'ws://127.0.0.1:9944');
 
-        // Create a new identity for local user
-        IdentityInterface katya = Identity();
-        await katya.initNoStorage();
-        String katyaUserName = "Katya${katya.accountId.substring(0, 5)}";
-        String katyaPhoneNumber = randomPhoneNumber;
-        kc2Service.setKeyring(katya.keyring);
-
-        // Assume sign up flow works successfully, just wait to tx complete
-        await kc2Service.newUser(
-            katya.accountId, katyaUserName, katyaPhoneNumber);
-        await Future.delayed(const Duration(seconds: 12));
+        final completer = Completer<bool>();
+        TestUserInfo katya = await createTestUser(completer: completer);
+        await Future.delayed(Duration(seconds: kc2Service.expectedBlockTimeSeconds));
 
         // Test utils
-        final completer = Completer<bool>();
         String txHash = "";
 
         // Create pool callback
         kc2Service.createPoolCallback = (tx) async {
-          // Check if the tx failed
-          if (tx.failedReason != null) {
-            completer.complete(false);
+          if (tx.hash != txHash) {
             return;
           }
 
-          // Check if the tx hash is the same
-          if (tx.hash != txHash) {
-            debugPrint('unexpected tx hash: ${tx.hash} ');
+          // Check if the tx failed
+          if (tx.chainError != null) {
             completer.complete(false);
             return;
           }
@@ -282,20 +427,19 @@ void main() {
           final poolId = pool.id;
 
           // Set commission equal to 2%
-          txHash = await kc2Service.setPoolCommission(
-              poolId, 20000000, katya.accountId);
+          txHash =
+              await kc2Service.setPoolCommission(poolId, 0.02, katya.accountId);
+
+          debugPrint('Pool $poolId commission set to 2%');
         };
 
         kc2Service.setPoolCommissionCallback = (tx) async {
-          // Check if the tx failed
-          if (tx.failedReason != null) {
-            completer.complete(false);
+          if (tx.hash != txHash) {
             return;
           }
 
-          // Check if the tx hash is the same
-          if (tx.hash != txHash) {
-            debugPrint('unexpected tx hash: ${tx.hash} ');
+          // Check if the tx failed
+          if (tx.chainError != null) {
             completer.complete(false);
             return;
           }
@@ -311,7 +455,7 @@ void main() {
           completer.complete(true);
         };
 
-        kc2Service.subscribeToAccount(katya.accountId);
+        kc2Service.subscribeToAccountTransactions(katya.userInfo!);
 
         // Create a pool
         txHash = await kc2Service.createPool(
@@ -340,33 +484,21 @@ void main() {
         // Connect to the chain
         await kc2Service.connectToApi(apiWsUrl: 'ws://127.0.0.1:9944');
 
-        // Create a new identity for local user
-        IdentityInterface katya = Identity();
-        await katya.initNoStorage();
-        String katyaUserName = "Katya${katya.accountId.substring(0, 5)}";
-        String katyaPhoneNumber = randomPhoneNumber;
-        kc2Service.setKeyring(katya.keyring);
-
-        // Assume sign up flow works successfully, just wait to tx complete
-        await kc2Service.newUser(
-            katya.accountId, katyaUserName, katyaPhoneNumber);
-        await Future.delayed(const Duration(seconds: 12));
+        final completer = Completer<bool>();
+        TestUserInfo katya = await createTestUser(completer: completer);
+        await Future.delayed(Duration(seconds: kc2Service.expectedBlockTimeSeconds));
 
         // Test utils
-        final completer = Completer<bool>();
         String txHash = "";
 
         // Create pool callback
         kc2Service.createPoolCallback = (tx) async {
-          // Check if the tx failed
-          if (tx.failedReason != null) {
-            completer.complete(false);
+          // Check if the tx hash is the same
+          if (tx.hash != txHash) {
             return;
           }
 
-          // Check if the tx hash is the same
-          if (tx.hash != txHash) {
-            debugPrint('unexpected tx hash: ${tx.hash} ');
+          if (tx.chainError != null) {
             completer.complete(false);
             return;
           }
@@ -378,12 +510,12 @@ void main() {
           final poolId = pool.id;
 
           // Set commission equal to 20%
-          txHash = await kc2Service.setPoolCommissionMax(poolId, 200000000);
+          txHash = await kc2Service.setPoolCommissionMax(poolId, 0.2);
         };
 
         kc2Service.setPoolCommissionMaxCallback = (tx) async {
           // Check if the tx failed
-          if (tx.failedReason != null) {
+          if (tx.chainError != null) {
             completer.complete(false);
             return;
           }
@@ -405,7 +537,7 @@ void main() {
           completer.complete(true);
         };
 
-        kc2Service.subscribeToAccount(katya.accountId);
+        kc2Service.subscribeToAccountTransactions(katya.userInfo!);
 
         // Create a pool
         txHash = await kc2Service.createPool(
@@ -434,33 +566,21 @@ void main() {
         // Connect to the chain
         await kc2Service.connectToApi(apiWsUrl: 'ws://127.0.0.1:9944');
 
-        // Create a new identity for local user
-        IdentityInterface katya = Identity();
-        await katya.initNoStorage();
-        String katyaUserName = "Katya${katya.accountId.substring(0, 5)}";
-        String katyaPhoneNumber = randomPhoneNumber;
-        kc2Service.setKeyring(katya.keyring);
-
-        // Assume sign up flow works successfully, just wait to tx complete
-        await kc2Service.newUser(
-            katya.accountId, katyaUserName, katyaPhoneNumber);
-        await Future.delayed(const Duration(seconds: 12));
+        final completer = Completer<bool>();
+        TestUserInfo katya = await createTestUser(completer: completer);
+        await Future.delayed(Duration(seconds: kc2Service.expectedBlockTimeSeconds));
 
         // Test utils
-        final completer = Completer<bool>();
         String txHash = "";
 
         // Create pool callback
         kc2Service.createPoolCallback = (tx) async {
-          // Check if the tx failed
-          if (tx.failedReason != null) {
-            completer.complete(false);
+          if (tx.hash != txHash) {
             return;
           }
 
-          // Check if the tx hash is the same
-          if (tx.hash != txHash) {
-            debugPrint('unexpected tx hash: ${tx.hash} ');
+          // Check if the tx failed
+          if (tx.chainError != null) {
             completer.complete(false);
             return;
           }
@@ -481,15 +601,12 @@ void main() {
         };
 
         kc2Service.setPoolCommissionChangeRateCallback = (tx) async {
-          // Check if the tx failed
-          if (tx.failedReason != null) {
-            completer.complete(false);
+          if (tx.hash != txHash) {
             return;
           }
 
-          // Check if the tx hash is the same
-          if (tx.hash != txHash) {
-            debugPrint('unexpected tx hash: ${tx.hash} ');
+          // Check if the tx failed
+          if (tx.chainError != null) {
             completer.complete(false);
             return;
           }
@@ -505,7 +622,7 @@ void main() {
           completer.complete(true);
         };
 
-        kc2Service.subscribeToAccount(katya.accountId);
+        kc2Service.subscribeToAccountTransactions(katya.userInfo!);
 
         // Create a pool
         txHash = await kc2Service.createPool(
@@ -535,44 +652,21 @@ void main() {
         // Connect to the chain
         await kc2Service.connectToApi(apiWsUrl: 'ws://127.0.0.1:9944');
 
-        // Create a new identity for local user Katya
-        IdentityInterface katya = Identity();
-        await katya.initNoStorage();
-        String katyaUserName = "Katya${katya.accountId.substring(0, 5)}";
-        String katyaPhoneNumber = randomPhoneNumber;
-        // Create a new identity for local user Punch
-        IdentityInterface punch = Identity();
-        await punch.initNoStorage();
-        String punchUserName = "Punch${katya.accountId.substring(0, 5)}";
-        String punchPhoneNumber = randomPhoneNumber;
-
-        // Assume sign up flow works successfully, just wait to tx complete,
-        // sign up both Katya and Punch
-        kc2Service.setKeyring(katya.keyring);
-        await kc2Service.newUser(
-            katya.accountId, katyaUserName, katyaPhoneNumber);
-        kc2Service.setKeyring(punch.keyring);
-        await kc2Service.newUser(
-            punch.accountId, punchUserName, punchPhoneNumber);
-        await Future.delayed(const Duration(seconds: 12));
-
-        kc2Service.setKeyring(katya.keyring);
+        final completer = Completer<bool>();
+        TestUserInfo katya = await createTestUser(completer: completer);
+        TestUserInfo punch = await createTestUser(completer: completer);
 
         // Test utils
-        final completer = Completer<bool>();
         String txHash = "";
 
         // Create pool callback
         kc2Service.createPoolCallback = (tx) async {
-          // Check if the tx failed
-          if (tx.failedReason != null) {
-            completer.complete(false);
+          if (tx.hash != txHash) {
             return;
           }
 
-          // Check if the tx hash is the same
-          if (tx.hash != txHash) {
-            debugPrint('unexpected tx hash: ${tx.hash} ');
+          // Check if the tx failed
+          if (tx.chainError != null) {
             completer.complete(false);
             return;
           }
@@ -596,15 +690,13 @@ void main() {
         };
 
         kc2Service.updatePoolRolesCallback = (tx) async {
-          // Check if the tx failed
-          if (tx.failedReason != null) {
-            completer.complete(false);
+          // Check if the tx hash is the same
+          if (tx.hash != txHash) {
             return;
           }
 
-          // Check if the tx hash is the same
-          if (tx.hash != txHash) {
-            debugPrint('unexpected tx hash: ${tx.hash} ');
+          // Check if the tx failed
+          if (tx.chainError != null) {
             completer.complete(false);
             return;
           }
@@ -622,8 +714,9 @@ void main() {
           completer.complete(true);
         };
 
-        kc2Service.subscribeToAccount(katya.accountId);
-
+        kc2Service.subscribeToAccountTransactions(katya.userInfo!);
+        //
+        kc2Service.setKeyring(katya.user.keyring);
         // Create a pool
         txHash = await kc2Service.createPool(
           amount: GenesisConfig.kCentsPerCoinBigInt,
@@ -650,44 +743,22 @@ void main() {
         // Connect to the chain
         await kc2Service.connectToApi(apiWsUrl: 'ws://127.0.0.1:9944');
 
-        // Create a new identity for local user Katya
-        IdentityInterface katya = Identity();
-        await katya.initNoStorage();
-        String katyaUserName = "Katya${katya.accountId.substring(0, 5)}";
-        String katyaPhoneNumber = randomPhoneNumber;
-        // Create a new identity for local user Punch
-        IdentityInterface punch = Identity();
-        await punch.initNoStorage();
-        String punchUserName = "Punch${katya.accountId.substring(0, 5)}";
-        String punchPhoneNumber = randomPhoneNumber;
-
-        // Assume sign up flow works successfully, just wait to tx complete,
-        // sign up both Katya and Punch
-        kc2Service.setKeyring(katya.keyring);
-        await kc2Service.newUser(
-            katya.accountId, katyaUserName, katyaPhoneNumber);
-        kc2Service.setKeyring(punch.keyring);
-        await kc2Service.newUser(
-            punch.accountId, punchUserName, punchPhoneNumber);
-        await Future.delayed(const Duration(seconds: 12));
-
-        kc2Service.setKeyring(katya.keyring);
+        final completer = Completer<bool>();
+        TestUserInfo katya = await createTestUser(completer: completer);
+        await createTestUser(completer: completer);
 
         // Test utils
-        final completer = Completer<bool>();
         String txHash = "";
 
         // Create pool callback
         kc2Service.createPoolCallback = (tx) async {
-          // Check if the tx failed
-          if (tx.failedReason != null) {
-            completer.complete(false);
+          // Check if the tx hash is the same
+          if (tx.hash != txHash) {
             return;
           }
 
-          // Check if the tx hash is the same
-          if (tx.hash != txHash) {
-            debugPrint('unexpected tx hash: ${tx.hash} ');
+          // Check if the tx failed
+          if (tx.chainError != null) {
             completer.complete(false);
             return;
           }
@@ -700,10 +771,6 @@ void main() {
 
           final validators = await kc2Service.getValidators();
 
-          // Roles:
-          // root: stays the same (Katya)
-          // nominator: changed to Punch
-          // bouncer: removed
           txHash = await kc2Service.nominateForPool(
             poolId,
             validators.map((validator) => validator.accountId).toList(),
@@ -711,15 +778,13 @@ void main() {
         };
 
         kc2Service.nominatePoolValidatorCallback = (tx) async {
-          // Check if the tx failed
-          if (tx.failedReason != null) {
-            completer.complete(false);
+          // Check if the tx hash is the same
+          if (tx.hash != txHash) {
             return;
           }
 
-          // Check if the tx hash is the same
-          if (tx.hash != txHash) {
-            debugPrint('unexpected tx hash: ${tx.hash} ');
+          // Check if the tx failed
+          if (tx.chainError != null) {
             completer.complete(false);
             return;
           }
@@ -736,8 +801,9 @@ void main() {
           completer.complete(true);
         };
 
-        kc2Service.subscribeToAccount(katya.accountId);
+        kc2Service.subscribeToAccountTransactions(katya.userInfo!);
 
+        kc2Service.setKeyring(katya.user.keyring);
         // Create a pool
         txHash = await kc2Service.createPool(
           amount: BigInt.from(1000000),
@@ -751,6 +817,262 @@ void main() {
         expect(completer.isCompleted, isTrue);
       },
       timeout: const Timeout(Duration(seconds: 280)),
+    );
+
+    test(
+      'get pools configuration works',
+      () async {
+        KarmachainService kc2Service = GetIt.I.get<KarmachainService>();
+        // Connect to the chain
+        await kc2Service.connectToApi(apiWsUrl: 'ws://127.0.0.1:9944');
+        await kc2Service.getPoolsConfiguration();
+      },
+      timeout: const Timeout(Duration(seconds: 280)),
+    );
+
+    test(
+      'unbond works',
+      () async {
+        KarmachainService kc2Service = GetIt.I.get<KarmachainService>();
+        // Connect to the chain
+        await kc2Service.connectToApi(apiWsUrl: 'ws://127.0.0.1:9944');
+
+        final completer = Completer<bool>();
+        TestUserInfo katya = await createTestUser(completer: completer);
+        await Future.delayed(Duration(seconds: kc2Service.expectedBlockTimeSeconds));
+
+        // Test utils
+        String txHash = "";
+
+        // Subscribe to Katya's transactions
+        kc2Service.subscribeToAccountTransactions(katya.userInfo!);
+
+        // Create a pool
+        txHash = await kc2Service.createPool(
+          amount: BigInt.from(2) * GenesisConfig.kCentsPerCoinBigInt,
+          root: katya.accountId,
+          nominator: katya.accountId,
+          bouncer: katya.accountId,
+        );
+
+        // Create pool callback
+        kc2Service.createPoolCallback = (tx) async {
+          if (tx.hash != txHash) {
+            // allow other tests to run in parallel
+            return;
+          }
+
+          // Check if the tx failed
+          if (tx.chainError != null) {
+            completer.complete(false);
+            return;
+          }
+
+          txHash =
+              await kc2Service.unbond(katya.accountId, BigInt.from(1000000));
+
+          completer.complete(true);
+        };
+
+        kc2Service.unbondPoolCallback = (tx) async {
+          if (tx.hash != txHash) {
+            // allow other tests to run in parallel
+            return;
+          }
+
+          // Check if the tx failed
+          if (tx.chainError != null) {
+            completer.complete(false);
+            return;
+          }
+
+          final poolMember =
+              await kc2Service.getMembershipPool(katya.accountId);
+          expect(poolMember!.points, BigInt.from(1000000));
+        };
+
+        // Wait for completer and verify test success
+        expect(await completer.future, equals(true));
+        expect(completer.isCompleted, isTrue);
+      },
+      timeout: const Timeout(Duration(seconds: 280)),
+    );
+
+    // @HolyGrease - we need the following basic pools integration test:
+    // 2. create pool and nominate the devnet validator.
+    // 3. Have 1 user join the pool.
+    // 4. Wait an era and pool gets rewarded and verify user can withdraw their rewards while staying in pool.
+
+    test(
+      'reward works',
+      () async {
+        KarmachainService kc2Service = GetIt.I.get<KarmachainService>();
+        // Connect to the chain
+        await kc2Service.connectToApi(apiWsUrl: 'ws://127.0.0.1:9944');
+
+        final completer = Completer<bool>();
+        TestUserInfo poolOwner = await createTestUser(completer: completer);
+        TestUserInfo poolMember = await createTestUser(completer: completer);
+        await Future.delayed(Duration(seconds: kc2Service.expectedBlockTimeSeconds));
+
+        // Test utils
+        Timer? blocksProcessingTimer;
+        String? txHash;
+
+        // Get current set of validators
+        final validators = await kc2Service.getValidators();
+        // Find exactly dev net validator
+        final alice = validators.firstWhere((prefs) =>
+            prefs.accountId ==
+            '5GNJqTPyNqANBkUVMN1LPPrxXnFouWXoe2wNSmmEoLctxiZY');
+
+        // Set pool owner keys
+        kc2Service.setKeyring(poolOwner.user.keyring);
+
+        // Subscribe to pool owner events
+        blocksProcessingTimer =
+            kc2Service.subscribeToAccountTransactions(poolOwner.userInfo!);
+
+        // Create a pool
+        txHash = await kc2Service.createPool(
+          amount: BigInt.from(1000000),
+          root: poolOwner.accountId,
+          nominator: poolOwner.accountId,
+          bouncer: poolOwner.accountId,
+        );
+
+        // Check transaction success and nominate
+        kc2Service.createPoolCallback = (tx) async {
+          // Check if the tx hash is the same
+          if (tx.hash != txHash) {
+            return;
+          }
+
+          // Check if the tx failed
+          if (tx.chainError != null) {
+            completer.complete(false);
+            return;
+          }
+
+          final pools = await kc2Service.getPools();
+          final pool = pools.firstWhere(
+              (pool) => pool.roles.depositor == poolOwner.accountId,
+              orElse: () => fail('pool not found'));
+
+          // Nominate nominator
+          txHash =
+              await kc2Service.nominateForPool(pool.id, [alice.accountId]);
+        };
+
+        kc2Service.nominatePoolValidatorCallback = (tx) async {
+          // Check if the tx hash is the same
+          if (tx.hash != txHash) {
+            return;
+          }
+
+          // Check if the tx failed
+          if (tx.chainError != null) {
+            completer.complete(false);
+            return;
+          }
+
+          final pool = await kc2Service.getPool(poolId: tx.poolId);
+          final nominations =
+              await kc2Service.getNominations(pool!.bondedAccountId);
+          expect(nominations!.targets, contains(alice.accountId));
+
+          // Wait for an 2 eras to pool became active nominator
+          // first era to be elected by election system
+          // second era to became active nominator
+          await Future.delayed(Duration(seconds: 2 * kc2Service.eraTimeSeconds));
+
+          // Set pool member keys
+          kc2Service.setKeyring(poolMember.user.keyring);
+
+          // Cancel pool owner subscription
+          blocksProcessingTimer!.cancel();
+
+          // Subscribe to pool member events
+          blocksProcessingTimer =
+              kc2Service.subscribeToAccountTransactions(poolMember.userInfo!);
+
+          // Join the pool
+          txHash = await kc2Service.joinPool(
+              amount: BigInt.from(1000000), poolId: pool.id);
+        };
+
+        kc2Service.joinPoolCallback = (tx) async {
+          // Check if the tx hash is the same
+          if (tx.hash != txHash) {
+            return;
+          }
+
+          // Check if the tx failed
+          if (tx.chainError != null) {
+            completer.complete(false);
+            return;
+          }
+
+          // Check that use joined the pool
+          final poolMembership =
+              await kc2Service.getMembershipPool(poolMember.accountId);
+          expect(poolMembership!.id, tx.poolId);
+
+          // Wait for an era to pass
+          await Future.delayed(Duration(seconds: 2 * kc2Service.eraTimeSeconds));
+
+          // Now validator should claim rewards
+          final blockchainStats = await kc2Service.getBlockchainStats();
+          // In devnet one era is 10 blocks
+          final currentEra = blockchainStats.tipHeight / 10;
+          // Pay out rewards for the previous era
+          txHash = await kc2Service.stakingPayoutStakers(alice.accountId, currentEra.toInt() - 1);
+        };
+
+        kc2Service.stakingPayoutStakersCallback = (tx) async {
+          // Check if the tx hash is the same
+          if (tx.hash != txHash) {
+            return;
+          }
+
+          // Check if the tx failed
+          if (tx.chainError != null) {
+            completer.complete(false);
+            return;
+          }
+
+          final poolOwnerPendingPayout = await kc2Service.getPendingPoolPayout(poolOwner.accountId);
+          final poolMemberPendingPayout = await kc2Service.getPendingPoolPayout(poolMember.accountId);
+
+          expect(poolOwnerPendingPayout, isNot(BigInt.zero));
+          expect(poolMemberPendingPayout, isNot(BigInt.zero));
+
+          txHash = await kc2Service.claimPayout();
+        };
+
+        kc2Service.claimPoolPayoutCallback = (tx) async {
+          // Check if the tx hash is the same
+          if (tx.hash != txHash) {
+            return;
+          }
+
+          // Check if the tx failed
+          if (tx.chainError != null) {
+            completer.complete(false);
+            return;
+          }
+
+          final userInfo = await kc2Service.getUserInfoByAccountId(poolMember.accountId);
+          expect(poolMember.userInfo!.balance <  userInfo!.balance, isTrue);
+
+          completer.complete(true);
+        };
+
+        // Wait for completer and verify test success
+        expect(await completer.future, equals(true));
+        expect(completer.isCompleted, isTrue);
+      },
+      timeout: const Timeout(Duration(seconds: 10 * 60)),
     );
   });
 }

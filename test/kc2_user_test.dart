@@ -7,12 +7,11 @@ import 'package:karma_coin/data/genesis_config.dart';
 import 'package:karma_coin/logic/app_state.dart';
 import 'package:karma_coin/logic/user.dart';
 import 'package:karma_coin/logic/user_interface.dart';
-import 'package:karma_coin/services/v2.0/kc2.dart';
-import 'package:karma_coin/services/v2.0/kc2_service.dart';
+import 'package:karma_coin/logic/verifier.dart';
+import 'package:karma_coin/services/v2.0/kc2_service_interface.dart';
 import 'package:karma_coin/services/v2.0/user_info.dart';
 
-final random = Random.secure();
-String get randomPhoneNumber => (random.nextInt(900000) + 100000).toString();
+import 'utils.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -20,14 +19,12 @@ void main() {
   FlutterSecureStorage.setMockInitialValues({});
 
   GetIt.I.registerLazySingleton<K2ServiceInterface>(() => KarmachainService());
+  GetIt.I.registerLazySingleton<AppState>(() => AppState());
+  GetIt.I.registerLazySingleton<KC2UserInteface>(() => KC2User());
+  GetIt.I.registerLazySingleton<Verifier>(() => Verifier());
+  GetIt.I.registerLazySingleton<ConfigLogic>(() => ConfigLogic());
 
   K2ServiceInterface kc2Service = GetIt.I.get<K2ServiceInterface>();
-
-  GetIt.I.registerLazySingleton<AppState>(() => AppState());
-
-  GetIt.I.registerLazySingleton<KC2UserInteface>(() => KC2User());
-
-  /// Tests using K2CUser
 
   group('KC2User tests', () {
     test(
@@ -66,14 +63,14 @@ void main() {
               }
 
               expect(userInfo.accountId, katya.identity.accountId);
-              expect(userInfo.phoneNumberHash, '0x$phoneNumberHash');
+              expect(userInfo.phoneNumberHash, phoneNumberHash);
               expect(userInfo.userName, katyaUserName);
               expect(userInfo.traitScores[0], isNotNull);
               expect(userInfo.traitScores[0]!.length, 1);
               expect(userInfo.getScore(0, 1), 1);
 
               // signup reward
-              expect(userInfo.balance, GenesisConfig.kCentsPerCoinBigInt);
+              expect(userInfo.balance, GenesisConfig.kCentsSignupReward);
 
               await katya.signout();
               completer.complete(true);
@@ -147,7 +144,12 @@ void main() {
 
               debugPrint('Updating from $katyaUserName to $katyaUserName1...');
 
-              await katya.updateUserInfo(katyaUserName1, null);
+              await katya.updateUserInfo(
+                  requestedUserName: katyaUserName1,
+                  requestedPhoneNumber: null);
+              if (katya.updateResult.value != UpdateResult.updating) {
+                completer.completeError('Failed to update user info');
+              }
 
               break;
             case SignupStatus.notSignedUp:
@@ -185,11 +187,9 @@ void main() {
             "Katya${katya.identity.accountId.substring(0, 5)}".toLowerCase();
 
         String phoneNumber = randomPhoneNumber;
-        String phoneNumberHash =
-            '0x${kc2Service.getPhoneNumberHash(phoneNumber)}';
+        String phoneNumberHash = kc2Service.getPhoneNumberHash(phoneNumber);
         String phoneNumber1 = randomPhoneNumber;
-        String phoneNumberHash1 =
-            '0x${kc2Service.getPhoneNumberHash(phoneNumber1)}';
+        String phoneNumberHash1 = kc2Service.getPhoneNumberHash(phoneNumber1);
 
         final completer = Completer<bool>();
 
@@ -220,7 +220,8 @@ void main() {
 
               debugPrint('Updating phone number...');
 
-              await katya.updateUserInfo(null, phoneNumber1);
+              await katya.updateUserInfo(
+                  requestedUserName: null, requestedPhoneNumber: phoneNumber1);
 
               break;
             case SignupStatus.notSignedUp:
@@ -296,10 +297,10 @@ void main() {
 
                     expect(userInfo, isNotNull);
                     expect(userInfo!.accountId, katya1.identity.accountId);
-                    expect(userInfo.phoneNumberHash, '0x$phoneNumberHash');
+                    expect(userInfo.phoneNumberHash, phoneNumberHash);
                     expect(userInfo.userName, katyaUserName);
 
-                    // expected to see balance reflecting katya's signup-reward and no additional reward for katyas1 signup
+                    // expected to see balance reflecting katya's signup-reward and no additional reward for katya signup
                     expect(userInfo.balance, BigInt.from(10000000));
 
                     KC2UserInfo? oldAccountInfo =
@@ -404,7 +405,7 @@ void main() {
                         await kc2Service.getUserInfoByAccountId(katyaAccountId);
 
                     // check balance and referral trait and score here
-                    expect(katyaInfo!.balance, BigInt.from(20000000 - 1234));
+                    expect(katyaInfo!.balance, BigInt.from(110000000 - 1234));
                     // score = signup + app sent/received (spender) + (ambassador) referral trait
                     expect(katyaInfo.karmaScore, 3);
 
@@ -473,19 +474,19 @@ void main() {
               debugPrint('Katya is signing up...');
               break;
             case SignupStatus.signedUp:
-              debugPrint('Katya signen up');
+              debugPrint('Katya signing up');
 
               // Get userInfo from chain for katya's phone number
               katyaInfo = await kc2Service
                   .getUserInfoByAccountId(katya.identity.accountId);
 
               // katya's signup reward
-              expect(katyaInfo!.balance, GenesisConfig.kCentsPerCoinBigInt);
+              expect(katyaInfo!.balance, GenesisConfig.kCentsSignupReward);
 
               debugPrint('Deleting katya user and waiting for 1 block...');
               await kc2Service.deleteUser();
 
-              Future.delayed(const Duration(seconds: 14), () async {
+              Future.delayed(Duration(seconds: kc2Service.expectedBlockTimeSeconds), () async {
                 // check there's no user info for katya
                 KC2UserInfo? info = await kc2Service
                     .getUserInfoByAccountId(katyaInfo!.accountId);
@@ -520,11 +521,9 @@ void main() {
 
                       expect(katya1Info, isNotNull);
                       expect(katya1Info!.accountId, katya1.identity.accountId);
-                      expect(katya1Info.phoneNumberHash, '0x$phoneNumberHash');
+                      expect(katya1Info.phoneNumberHash, phoneNumberHash);
                       expect(katya1Info.userName, katyaUserName);
 
-                      // @Danylo Kyrieiev  this should be 1 - existential deposit
-                      // as soon as your change is merged
                       expect(katya1Info.balance, BigInt.zero);
                       await katya1.signout();
                       completer.complete(true);

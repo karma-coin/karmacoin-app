@@ -1,4 +1,9 @@
 import 'package:karma_coin/services/v2.0/interfaces.dart';
+import 'package:karma_coin/services/v2.0/nomination_pools/commission_change_rate.dart';
+import 'package:karma_coin/services/v2.0/nomination_pools/nomination_pools_configuration.dart';
+import 'package:karma_coin/services/v2.0/nomination_pools/pool.dart';
+import 'package:karma_coin/services/v2.0/nomination_pools/pool_member.dart';
+import 'package:karma_coin/services/v2.0/nomination_pools/pool_state.dart';
 import 'package:karma_coin/services/v2.0/nomination_pools/txs/chill.dart';
 import 'package:karma_coin/services/v2.0/nomination_pools/txs/claim_commission.dart';
 import 'package:karma_coin/services/v2.0/nomination_pools/txs/claim_payout.dart';
@@ -11,17 +16,39 @@ import 'package:karma_coin/services/v2.0/nomination_pools/txs/set_commission_max
 import 'package:karma_coin/services/v2.0/nomination_pools/txs/unbond.dart';
 import 'package:karma_coin/services/v2.0/nomination_pools/txs/update_roles.dart';
 import 'package:karma_coin/services/v2.0/nomination_pools/txs/withdraw_unbonded.dart';
-import 'package:karma_coin/services/v2.0/nomination_pools/types.dart';
 import 'package:karma_coin/common_libs.dart';
+import 'package:karma_coin/services/v2.0/nomination_pools/types.dart';
 import 'package:polkadart/scale_codec.dart';
 
+export 'package:karma_coin/services/v2.0/nomination_pools/txs/claim_commission.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/txs/claim_payout.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/txs/create.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/txs/join.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/txs/nominate.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/txs/set_commission.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/txs/set_commission_change_rate.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/txs/set_commission_max.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/txs/unbond.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/txs/update_roles.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/txs/withdraw_unbonded.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/txs/chill.dart';
+
+export 'package:karma_coin/services/v2.0/nomination_pools/commission_change_rate.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/commission.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/nomination_pools_configuration.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/pool_member.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/pool_roles.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/pool_state.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/pool.dart';
+export 'package:karma_coin/services/v2.0/nomination_pools/types.dart';
+
 /// Client callback types
-typedef JoinPoolCallback = Future<void> Function(KC2JoinTxV1 tx);
+typedef JoinPoolCallback = Future<void> Function(KC2JoinPoolTxV1 tx);
 typedef ClaimPoolPayoutCallback = Future<void> Function(KC2ClaimPayoutTxV1 tx);
 typedef UnbondPoolCallback = Future<void> Function(KC2UnbondTxV1 tx);
 typedef WithdrawUnbondedPoolCallback = Future<void> Function(
     KC2WithdrawUnbondedTxV1 tx);
-typedef CreatePoolCallback = Future<void> Function(KC2CreateTxV1 tx);
+typedef CreatePoolCallback = Future<void> Function(KC2CreatePoolTxV1 tx);
 typedef NominatePoolValidatorCallback = Future<void> Function(
     KC2NominateTxV1 tx);
 typedef ChillPoolCallback = Future<void> Function(KC2ChillTxV1 tx);
@@ -36,31 +63,28 @@ typedef ClaimPoolCommissionCallback = Future<void> Function(
     KC2ClaimCommissionTxV1 tx);
 
 mixin KC2NominationPoolsInterface on ChainApiProvider {
-  /// Stake funds with a pool. The amount to bond is transferred from the member
-  /// to the pool's account and immediately increases the pool's bond.
+  /// Stake funds with a pool and join it.
+  /// The amount to bond is transferred from the member to the pool's account and immediately increases the pool's bond.
   ///
-  /// # Note
-  ///
-  /// * An account can only be a member of a single pool.
-  /// * An account cannot join the same pool multiple times.
-  /// * This call will *not* dust the member account, so the member must have at
-  /// least `existential deposit + amount` in their account.
-  /// * Only a pool with [`PoolState::Open`] can be joined.
-  Future<String> join(BigInt amount, PoolId poolId) async {
+  /// - An account can only be a member of a single pool.
+  /// - An account cannot join the same pool multiple times.
+  /// - This call will *not* dust the member account. so the member must have at least `existential deposit + amount` in their account.
+  /// -  Only a pool with [`PoolState::Open`] can be joined.
+  Future<String> joinPool(
+      {required BigInt amount, required PoolId poolId}) async {
     try {
       final call = MapEntry('NominationPools',
           MapEntry('join', {"amount": amount, "pool_id": poolId}));
 
       return await signAndSendTransaction(call);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to join nomination pool: ${e.details}');
+    } catch (e) {
+      debugPrint('Failed to join nomination pool: $e');
       rethrow;
     }
   }
 
-  /// A bonded member can use this to claim its payout based on the rewards
-  /// that the pool has accumulated since their last claimed payout
-  /// (OR since joining if this is their first time claiming rewards).
+  /// A bonded member can use this to claim its payout based on the rewards that the pool has accumulated since their last claimed payout OR since joining if this is their first time claiming rewards).
+  ///
   /// The payout will be transferred to the member's account.
   ///
   /// The member will earn rewards pro-rate based on the members stake vs the
@@ -71,11 +95,11 @@ mixin KC2NominationPoolsInterface on ChainApiProvider {
   ///
   Future<String> claimPayout() async {
     try {
-      const call = MapEntry('NominationPools', MapEntry('claim_payout', {}));
+      const call = MapEntry('NominationPools', MapEntry('claim_payout', <String, dynamic>{}));
 
       return await signAndSendTransaction(call);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to join nomination pool: ${e.details}');
+    } catch (e) {
+      debugPrint('Failed to claim payout: $e');
       rethrow;
     }
   }
@@ -113,14 +137,8 @@ mixin KC2NominationPoolsInterface on ChainApiProvider {
   /// However, it may not be possible to release the current unlocking chunks,
   /// in which case, the result of this call will likely be the `NoMoreChunks` error from the staking system.
   ///
-  /// @HolyGrease - what happen if unbound is called for only some of the member's stake?
-  /// I understand the use case of unbounding all of the member's stake, but not some of it
-  /// Does it just mean reduce stake in the pool and stay in it?
-  ///
   Future<String> unbond(String accountId, BigInt unbondingPoints) async {
     try {
-      // TODO: use balance as argument and convert it to points inside function
-
       final call = MapEntry(
           'NominationPools',
           MapEntry('unbond', {
@@ -129,14 +147,13 @@ mixin KC2NominationPoolsInterface on ChainApiProvider {
           }));
 
       return await signAndSendTransaction(call);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to join nomination pool: ${e.details}');
+    } catch (e) {
+      debugPrint('Failed to join nomination pool: $e');
       rethrow;
     }
   }
 
-  /// Withdraw unbonded funds from `member_account`. If no bonded funds can be
-  /// unbonded, an error is returned.
+  /// Withdraw unbonded funds from `member_account`.
   ///
   /// Under certain conditions, this call can be dispatched permissionlessly
   /// (i.e. by any account).
@@ -157,7 +174,7 @@ mixin KC2NominationPoolsInterface on ChainApiProvider {
   ///
   Future<String> withdrawUnbonded(String accountId) async {
     try {
-      // TODO: calculate this value in some way. How???
+      // todo: calculate this value in some way. How???
       const numSlashingSpans = 256;
 
       final call = MapEntry(
@@ -168,14 +185,11 @@ mixin KC2NominationPoolsInterface on ChainApiProvider {
           }));
 
       return await signAndSendTransaction(call);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to join nomination pool: ${e.details}');
+    } catch (e) {
+      debugPrint('Failed to join nomination pool: $e');
       rethrow;
     }
   }
-
-  /// @HolyGrease - is there an api to get the min pool amount to create one?
-  /// If not please add one... we need to check amount is above this min whnen creating...
 
   /// Create a new delegation pool.
   ///
@@ -210,22 +224,17 @@ mixin KC2NominationPoolsInterface on ChainApiProvider {
           }));
 
       return await signAndSendTransaction(call);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to join nomination pool: ${e.details}');
+    } catch (e) {
+      debugPrint('Failed to join nomination pool: $e');
       rethrow;
     }
   }
 
-  /// @HolyGrease - is there an api got info of all bonded validators that can be nominated?
-  /// if no - we need to have it so user sees options to nominate...
-
   /// Nominate on behalf of the pool.
   ///
-  /// The dispatch origin of this call must be signed by the pool nominator
-  /// or the pool root role.
+  /// The dispatch origin of this call must be signed by the pool nominator or the pool root role.
   ///
-  /// This directly forward the call to the staking pallet, on behalf of the
-  /// pool bonded account.
+  /// This directly forward the call to the staking pallet, on behalf of the pool bonded account.
   Future<String> nominateForPool(
       PoolId poolId, List<String> validatorsAccountIds) async {
     try {
@@ -240,19 +249,17 @@ mixin KC2NominationPoolsInterface on ChainApiProvider {
           }));
 
       return await signAndSendTransaction(call);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to join nomination pool: ${e.details}');
+    } catch (e) {
+      debugPrint('Failed to join nomination pool: $e');
       rethrow;
     }
   }
 
   /// Chill on behalf of the pool.
   ///
-  /// The dispatch origin of this call must be signed by the pool nominator
-  /// or the pool root role, same as [`Pallet::nominate`].
+  /// The dispatch origin of this call must be signed by the pool nominator or the pool root role, same as [`Pallet::nominate`].
   ///
-  /// This directly forward the call to the staking pallet, on behalf of the
-  /// pool bonded account.
+  /// This directly forward the call to the staking pallet, on behalf of the pool bonded account.
   Future<String> chillPool(PoolId poolId) async {
     try {
       final call = MapEntry(
@@ -262,16 +269,15 @@ mixin KC2NominationPoolsInterface on ChainApiProvider {
           }));
 
       return await signAndSendTransaction(call);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to join nomination pool: ${e.details}');
+    } catch (e) {
+      debugPrint('Failed to join nomination pool: $e');
       rethrow;
     }
   }
 
   /// Update the roles of the pool.
   ///
-  /// The root is the only entity that can change any of the roles, including
-  /// itself, excluding the depositor, who can never change.
+  /// The root is the only entity that can change any of the roles, including itself, excluding the depositor, who can never change.
   ///
   /// It emits an event, notifying UIs of the role change. This event is quite relevant to most pool members and they should be informed of changes to pool roles.
   Future<String> updatePoolRoles(
@@ -331,8 +337,8 @@ mixin KC2NominationPoolsInterface on ChainApiProvider {
           }));
 
       return await signAndSendTransaction(call);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to join nomination pool: ${e.details}');
+    } catch (e) {
+      debugPrint('Failed to join nomination pool: $e');
       rethrow;
     }
   }
@@ -341,15 +347,20 @@ mixin KC2NominationPoolsInterface on ChainApiProvider {
   ///
   /// - If a `null` is supplied to `commission` and `beneficiary`, existing
   ///   commission will be removed.
-  /// - Both `commission` and `beneficiary` must be supplied or be `null`
-  /// - commision - [0,...,1B]
+  /// - Both `commission` and `beneficiary` must be supplied or be `null`.
+  /// - Commission range [0.0,...,1.0].
+  ///
+  ///
   Future<String> setPoolCommission(
-      PoolId poolId, int? commission, String? beneficiary) async {
+      PoolId poolId, double? commission, String? beneficiary) async {
     try {
       Option newCommission;
-
       if (commission != null && beneficiary != null) {
-        newCommission = Option.some([commission, decodeAccountId(beneficiary)]);
+        if (commission < 0.0 || commission > 1.0) {
+          throw Exception('Commission must be in range [0.0,...,1.0]');
+        }
+        int c = (commission * 1000000000).toInt();
+        newCommission = Option.some([c, decodeAccountId(beneficiary)]);
       } else {
         newCommission = const Option.none();
       }
@@ -362,30 +373,36 @@ mixin KC2NominationPoolsInterface on ChainApiProvider {
           }));
 
       return await signAndSendTransaction(call);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to join nomination pool: ${e.details}');
+    } catch (e) {
+      debugPrint('Failed to join nomination pool: $e');
       rethrow;
     }
   }
 
   /// Set the maximum commission of a pool.
   ///
-  /// - Initial max can be set to any `Perbill`, and only smaller values
-  ///   thereafter.
-  /// - Current commission will be lowered in the event it is higher than a
-  ///   new max commission.
-  Future<String> setPoolCommissionMax(PoolId poolId, int maxCommission) async {
+  /// - Initial max can be set to any percentage up to the chain's global max commission %, and only smaller values thereafter.
+  /// - Current commission will be lowered in the event it is higher than a new max commission.
+  /// - maxCommission range [0.0,...,1.0]
+  Future<String> setPoolCommissionMax(
+      PoolId poolId, double maxCommission) async {
+    if (maxCommission < 0.0 || maxCommission > 1.0) {
+      throw Exception('Max commission must be in range [0.0,...,1.0]');
+    }
+
+    int maxC = (maxCommission * 1000000000).toInt();
+
     try {
       final call = MapEntry(
           'NominationPools',
           MapEntry('set_commission_max', {
             'pool_id': poolId,
-            'max_commission': maxCommission,
+            'max_commission': maxC,
           }));
 
       return await signAndSendTransaction(call);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to join nomination pool: ${e.details}');
+    } catch (e) {
+      debugPrint('Failed to join nomination pool: $e');
       rethrow;
     }
   }
@@ -407,17 +424,15 @@ mixin KC2NominationPoolsInterface on ChainApiProvider {
           }));
 
       return await signAndSendTransaction(call);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to join nomination pool: ${e.details}');
+    } catch (e) {
+      debugPrint('Failed to join nomination pool: $e');
       rethrow;
     }
   }
 
   /// Claim pending commission.
   ///
-  /// The dispatch origin of this call must be signed by the `root` role of the pool.
-  /// Pending commission is paid out and added to total claimed commission`.
-  /// Total pending commission is reset to zero. the current.
+  /// The dispatch origin of this call must be signed by the `root` role of the pool. Pending commission is paid out and added to total claimed commission`. Total pending commission is reset to zero. the current.
   Future<String> claimPoolCommission(PoolId poolId) async {
     try {
       final call = MapEntry(
@@ -427,63 +442,79 @@ mixin KC2NominationPoolsInterface on ChainApiProvider {
           }));
 
       return await signAndSendTransaction(call);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to join nomination pool: ${e.details}');
+    } catch (e) {
+      debugPrint('Failed to join nomination pool: $e');
       rethrow;
     }
   }
 
   // RPC
 
-  /// Returns the pending rewards for the member that the AccountId was given for.
-  Future<BigInt> pendingPoolPayouts(String accountId) async {
+  /// Returns the pending rewards in coins units for the member that the AccountId was given for.
+  Future<BigInt> getPendingPoolPayout(String accountId) async {
     try {
-      return await callRpc('nominationPools_pendingPayouts', [accountId])
-          .then((payout) => BigInt.parse(payout));
+      return await callRpc('nominationPools_pendingRewards', [accountId]).then(
+          (payout) => BigInt.from(payout));
     } on PlatformException catch (e) {
       debugPrint('Failed to get pending payouts: ${e.details}');
       rethrow;
     }
   }
 
-  /// Returns the equivalent balance of `points` for pools
-  /// @HolyGrease - it is for any pool not for a specific one - correct?
-  Future<BigInt> getPoolsPointsToBalance(BigInt points) async {
+  /// Returns the equivalent balance of `points` for pools.
+  Future<BigInt> getPoolsPointsToBalance(PoolId poolId, BigInt points) async {
     try {
       return await callRpc(
-              'nominationPools_pointsToBalance', [points.toString()])
-          .then((balance) => BigInt.parse(balance));
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get balance from points: ${e.details}');
+              'nominationPools_pointsToBalance', [poolId, points.toInt()])
+          .then((balance) => BigInt.from(balance));
+    } catch (e) {
+      debugPrint('Failed to get balance from points: $e');
       rethrow;
     }
   }
 
   /// Returns the equivalent points of `new_funds` for a given pool.
-  /// @HolyGrease - it is for any pool not for a specific one - correct?
-  Future<BigInt> getPoolsBalanceToPoints(BigInt balance) async {
+  Future<BigInt> getPoolsBalanceToPoints(PoolId poolId, BigInt balance) async {
     try {
       return await callRpc(
-              'nominationPools_balanceToPoints', [balance.toString()])
-          .then((points) => BigInt.parse(points));
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get points from balance: ${e.details}');
+              'nominationPools_balanceToPoints', [poolId, balance.toInt()])
+          .then((points) => BigInt.from(points));
+    } catch (e) {
+      debugPrint('Failed to get points from balance: $e');
       rethrow;
     }
   }
 
-  /// Returns list of nomination pools.
-  /// @holyGrease - are only open pools returned or all of them?
-  Future<List<Pool>> getPools() async {
+  /// Returns list of on-chain nomination pools.
+  /// Optionally only return pools in the specified state.
+  Future<List<Pool>> getPools({PoolState? state}) async {
     try {
-      final pools = await callRpc('nominationPools_getPools', []).then(
+      List<Pool> pools = await callRpc('nominationPools_getPools', []).then(
           (pools) =>
               pools.map((pool) => Pool.fromJson(pool)).toList().cast<Pool>());
 
+      if (state != null) {
+        pools = pools.where((pool) => pool.state == state).toList();
+      }
       return pools;
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get nomination pools: ${e.details}');
+    } catch (e) {
+      debugPrint('Failed to get nomination pools: $e');
       rethrow;
+    }
+  }
+
+  /// Get pool by id. This method will populate pool's user info
+  Future<Pool?> getPool({required int poolId}) async {
+    try {
+      // Get all pools
+      List<Pool> pools = await getPools();
+      Pool pool = pools.firstWhere((p) => p.id == poolId);
+      await pool.populateData();
+      return pool;
+    } catch (e) {
+      debugPrint('Pool not found in pools...');
+      // TODO: figure out how to handle - pool was deleted
+      return null;
     }
   }
 
@@ -492,19 +523,40 @@ mixin KC2NominationPoolsInterface on ChainApiProvider {
     try {
       return await callRpc('nominationPools_getConfiguration', [])
           .then((config) => NominationPoolsConfiguration.fromJson(config));
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get nomination pools configuration: ${e.details}');
+    } catch (e) {
+      debugPrint('Failed to get nomination pools configuration: $e');
       rethrow;
     }
   }
 
-  /// If account id is a member of any nomination pool returns pool id of this pool otherwise `null`
+  /// Returns the pool id if accountId is member of a pool.
   Future<PoolMember?> getMembershipPool(String accountId) async {
     try {
-      return await callRpc('nominationPools_memberOf', [accountId])
-          .then((v) => PoolMember.fromJson(v));
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get nomination pool id: ${e.details}');
+      PoolMember? member =
+          await callRpc('nominationPools_memberOf', [accountId])
+              .then((v) => v == null ? null : PoolMember.fromJson(v));
+
+      if (member == null) {
+        debugPrint('User is not member of a pool');
+      } else {
+        debugPrint('User is member of a pool: ${member.id}');
+      }
+      return member;
+    } catch (e) {
+      debugPrint('Failed to get nomination pool id: $e');
+      rethrow;
+    }
+  }
+
+  /// Returns pool members for a given pool.
+  Future<List<String>> getPoolMembers(PoolId poolId,
+      {int? fromIndex, int? limit}) async {
+    try {
+      return await callRpc(
+              'nominationPools_getPoolMembers', [poolId, fromIndex, limit])
+          .then((v) => v.cast<String>());
+    } catch (e) {
+      debugPrint('Failed to get nomination pool id: $e');
       rethrow;
     }
   }

@@ -1,473 +1,832 @@
 import 'dart:async';
-import 'package:convert/convert.dart';
+import 'package:collection/collection.dart';
 import 'package:karma_coin/common_libs.dart';
-import 'package:karma_coin/logic/app_state.dart';
+import 'package:karma_coin/services/v2.0/block.dart';
+import 'package:karma_coin/services/v2.0/error.dart';
 import 'package:karma_coin/services/v2.0/interfaces.dart';
+import 'package:karma_coin/services/v2.0/kc2_service_interface.dart';
+import 'package:karma_coin/services/v2.0/event.dart';
+import 'package:karma_coin/services/v2.0/metadata_preparer.dart';
+import 'package:karma_coin/services/v2.0/nomination_pools/interfaces.dart';
+import 'package:karma_coin/services/v2.0/staking/interfaces.dart';
+import 'package:karma_coin/services/v2.0/staking/tx/bond.dart';
+import 'package:karma_coin/services/v2.0/staking/tx/bond_extra.dart';
+import 'package:karma_coin/services/v2.0/staking/tx/chill.dart';
+import 'package:karma_coin/services/v2.0/staking/tx/nominate.dart';
+import 'package:karma_coin/services/v2.0/staking/tx/payout_stakers.dart';
+import 'package:karma_coin/services/v2.0/staking/tx/unbond.dart';
+import 'package:karma_coin/services/v2.0/staking/tx/withdraw_unbonded.dart';
 import 'package:karma_coin/services/v2.0/txs/tx.dart';
-import 'package:karma_coin/services/v2.0/types.dart';
 import 'package:karma_coin/services/v2.0/user_info.dart';
+import 'package:polkadart/polkadart.dart' as polkadart;
 import 'package:polkadart/substrate/substrate.dart';
-import 'package:polkadart_scale_codec/primitives/primitives.dart';
+import 'package:polkadart_scale_codec/polkadart_scale_codec.dart';
+import 'package:substrate_metadata_fixed/models/models.dart';
+import 'package:substrate_metadata_fixed/substrate_metadata.dart';
+import 'package:convert/convert.dart';
+import 'package:substrate_metadata_fixed/types/metadata_types.dart';
 
-/// Client callback types
-typedef NewUserCallback = Future<void> Function(KC2NewUserTransactionV1 tx);
-typedef UpdateUserCallback = Future<void> Function(KC2UpdateUserTxV1 tx);
-typedef AppreciationCallback = Future<void> Function(KC2AppreciationTxV1 tx);
-typedef TransferCallback = Future<void> Function(KC2TransferTxV1 tx);
+class KarmachainService extends ChainApiProvider
+    with KC2NominationPoolsInterface, KC2StakingInterface, K2ServiceInterface {
+  bool _connectedToApi = false;
+  NominationPoolsConfiguration? _poolsConfiguration;
 
-enum FetchAppreciationsStatus { idle, fetching, fetched, error }
+  late String _apiWsUrl;
 
-String verificationBypassToken = 'dummy';
+  @override
 
-mixin K2ServiceInterface implements ChainApiProvider {
-  /// Get the chain's existential deposit amount
-  BigInt get existentialDeposit;
+  /// Number of blocks in an epoch
+  int get blocksPerEpoch =>
+      chainInfo.constants["Babe"]!["EpochDuration"]!.value.toInt();
 
-  bool get connectedToApi;
+  /// Expected block time miliseconds
+  @override
+  int get expectedBlockTimeMs =>
+      chainInfo.constants["Babe"]!["ExpectedBlockTime"]!.value.toInt();
 
-  /// Currently connected API URL
-  String? get apiWsUrl;
+  /// Expected block time in seconds
+  @override
+  int get expectedBlockTimeSeconds => expectedBlockTimeMs ~/ 1000;
 
-  /// Hasher to use with phone number
-  Blake2bHasher hasher = const Blake2bHasher(64);
+  /// Expected epoch duration in seconds
+  @override
+  int get epochDurationSeconds => blocksPerEpoch * expectedBlockTimeMs ~/ 1000;
 
-  /// Connect to a karmachain api service. e.g
+  /// Number of eras in an epoch
+  @override
+  int get epochsPerEra =>
+      chainInfo.constants["Staking"]!["SessionsPerEra"]!.value.toInt();
+
+  /// Expected era duraiton in seconds
+  @override
+  int get eraTimeSeconds => epochsPerEra * epochDurationSeconds;
+
+  @override
+  bool get connectedToApi => _connectedToApi;
+
+  @override
+  String? get apiWsUrl => _apiWsUrl;
+
+  /// Decoded chain metadata
+  late DecodedMetadata decodedMetadata;
+
+  @override
+  BigInt get existentialDeposit =>
+      chainInfo.constants['Balances']!['ExistentialDeposit']!.value;
+
+  void _printChainInfo() {
+    debugPrint('Net id: $netId');
+    debugPrint('block time: $expectedBlockTimeSeconds secs');
+    debugPrint('Era time: $eraTimeSeconds secs');
+    debugPrint('Epoch time: $epochDurationSeconds secs');
+    debugPrint(
+        'Existential deposit: ${existentialDeposit.toString()} karma cents');
+    debugPrint('Epocs per era: $epochsPerEra');
+  }
+
+  /// Connect to a karmachain api service. e.g.
   /// Local running node - "ws://127.0.0.1:9944"
   /// Testnet - "wss://testnet.karmaco.in/testnet/ws"
-  /// Optionally provide a verifier provider url, to allow connecting to api providers which are not
-  /// verifiers (not yet supported)
-  Future<void> connectToApi({required String apiWsUrl, String? verifierWsUrl});
-
-  // rpc methods
-
-  Future<String> getNodeVersion();
-
-  /// Provides information about user account by `AccountId`
-  Future<KC2UserInfo?> getUserInfoByAccountId(String accountId) async {
+  @override
+  Future<void> connectToApi({required String apiWsUrl}) async {
     try {
-      Map<String, dynamic>? result =
-          await callRpc('identity_getUserInfoByAccountId', [accountId]);
-      return result == null ? null : KC2UserInfo.fromJson(result);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get user information by account id: ${e.message}');
-      rethrow;
-    }
-  }
+      debugPrint('Connecting to kc2 api...');
+      _apiWsUrl = apiWsUrl;
+      karmachain = polkadart.Provider(Uri.parse(apiWsUrl));
+      api = polkadart.StateApi(karmachain);
+      final metadata = await karmachain.send('state_getMetadata', []);
 
-  /// Provides information about user account by `Username`
-  Future<KC2UserInfo?> getUserInfoByUserName(String username) async {
-    try {
-      Map<String, dynamic>? result =
-          await callRpc('identity_getUserInfoByUsername', [username]);
-      return result == null ? null : KC2UserInfo.fromJson(result);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get user information by username: ${e.message}');
-      rethrow;
-    }
-  }
+      // get network id. Default to 42 (testnet)
+      netId =
+          await callRpc('system_properties', []).then((r) => r['ss58Format']) ??
+              42;
 
-  /// Provides information about user account by `PhoneNumber`
-  ///
-  /// Use getPhoneNumberHash of an international number w/o leading '+'.
-  /// Hex string may be 0x prefixed or not
-  Future<KC2UserInfo?> getUserInfoByPhoneNumberHash(
-      String phoneNumberHash) async {
-    try {
-      // Cut `0x` prefix if exists
-      if (phoneNumberHash.startsWith('0x')) {
-        phoneNumberHash = phoneNumberHash.substring(2);
-      }
+      // check network id from node matches the client network type intent
+      //if (netId != configLogic.networkId.value) {
+      // todo: deal with it so client knows about issue
+      //  throw 'Invalid network id returned by node. Expected ${configLogic.networkId.value}, got $netId';
+      //}
 
-      Map<String, dynamic>? result = await callRpc(
-          'identity_getUserInfoByPhoneNumberHash', [phoneNumberHash]);
-      return result == null ? null : KC2UserInfo.fromJson(result);
-    } on PlatformException catch (e) {
-      debugPrint(
-          'Failed to get user information by phone number hash: ${e.message}');
-      rethrow;
-    }
-  }
+      decodedMetadata =
+          MetadataDecoder.instance.decode(metadata.result.toString());
 
-  /// Fetch list of community members with information
-  /// about each member account
-  Future<List<KC2UserInfo>> getCommunityMembers(int communityId,
-      {int? fromIndex, int? limit}) async {
-    try {
-      List<dynamic> result = await callRpc(
-          'community_getAllUsers', [communityId, fromIndex, limit]);
+      MetadataPreparer.prepareMetadata(decodedMetadata.metadata);
 
-      return result.map((e) => KC2UserInfo.fromJson(e)).toList();
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get community members: ${e.message}');
-      rethrow;
-    }
-  }
+      chainInfo = ChainInfo.fromMetadata(decodedMetadata);
 
-  /// Fetch list of users who's username starts with `prefix`
-  /// Can be filtered by `communityId`. Pass null communityId for no filtering
-  Future<List<Contact>> getContacts(String prefix,
-      {int? communityId, int? fromIndex, int? limit}) async {
-    try {
-      List<dynamic> result = await callRpc(
-          'community_getContacts', [prefix, communityId, fromIndex, limit]);
-      return result.map((e) => Contact.fromJson(e)).toList();
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get contacts: ${e.message}');
-      rethrow;
-    }
-  }
+      _printChainInfo();
 
-  /// Fetch list who participate in karma rewards distribution
-  Future<List<KC2UserInfo>> getLeaderBoard() async {
-    try {
-      List<dynamic> result = await callRpc('community_getLeaderBoard', []);
-      return result.map((e) => KC2UserInfo.fromJson(e)).toList();
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get leader board: ${e.message}');
-      rethrow;
-    }
-  }
+      chainInfo.scaleCodec.registry.registerCustomCodec({
+        'Extra':
+            '(CheckMortality, CheckNonce, ChargeTransactionPaymentWithSubsidies)',
+        'Additional': '(u32, u32, H256, H256)',
+        'UnsignedPayload': '(Call, Extra, Additional)',
+        'Extrinsic': '(MultiAddress, MultiSignature, Extra)',
+      });
+      _connectedToApi = true;
+      debugPrint('Connected to api: $apiWsUrl');
 
-  /// Fetch information about chain like last block time, rewards, etc
-  Future<BlockchainStats> getBlockchainStats() async {
-    try {
-      Map<String, dynamic> result =
-          await callRpc('chain_getBlockchainData', []);
-      return BlockchainStats.fromJson(result);
+      // get pools configuration so it is accessible to the app
+      _poolsConfiguration = await getPoolsConfiguration();
     } catch (e) {
-      debugPrint('Failed to get blockchain stats: $e');
+      debugPrint('Failed to connect to kc2 api: $e');
+      _connectedToApi = false;
       rethrow;
     }
   }
 
-  Future<String> getNetName() async {
-    try {
-      return await callRpc('chain_getNetworkId', []);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get net id: ${e.message}');
-      rethrow;
-    }
+  @override
+  Future<String> getNodeVersion() async {
+    return await callRpc('system_version', []);
   }
 
-  /// Fetch supported by the chain char traits
-  Future<List<CharTrait>> getCharTraits() async {
+  @override
+  Future<int> getGenesisTimestamp() async {
     try {
-      List<dynamic> result = await callRpc('chain_getCharTraits', []);
-      return result.map((e) => CharTrait.fromJson(e)).toList();
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get char traits: ${e.message}');
-      rethrow;
-    }
-  }
+      final BigInt blockTime = BigInt.from(12000);
+      // Because genesis block do not contains events,
+      // we need to fetch first block instead
+      const String blockNumber = '0x1';
 
-  /// Fetch chain genesis time
-  Future<int> getGenesisTimestamp();
+      // Get block hash by block number
+      final blockHash = await callRpc('chain_getBlockHash', [blockNumber]);
+      // Get block by hash
+      final block = await callRpc('chain_getBlock', [blockHash]);
+      // Decode block extrinsics
+      final extrinsics = block['block']['extrinsics'].map((encodedExtrinsic) {
+        final extrinsic = _decodeTransaction(Input.fromHex(encodedExtrinsic));
+        final extrinsicHash =
+            hex.encode(Hasher.blake2b256.hashString(encodedExtrinsic));
 
-  /// Fetch transaction by block number and transaction index
-  Future<Transaction> getTransaction(int blockNumber, int txIndex) async {
-    try {
-      Map<String, dynamic> result =
-          await callRpc('chain_getTransaction', [blockNumber, txIndex]);
-      return Transaction.fromJson(result);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get transactions_getTx: ${e.message}');
-      rethrow;
-    }
-  }
+        return MapEntry(extrinsicHash, extrinsic);
+      }).toList();
+      // Get timestamp from set timestamp extrinsic
+      BigInt timestamp = extrinsics
+          .firstWhere((e) =>
+              e.value['calls'].key == 'Timestamp' &&
+              e.value['calls'].value.key == 'set')
+          .value['calls']
+          .value
+          .value['now'];
 
-  /// Fetch transaction by transaction hash
-  /// TODO: @holygrease this should return a typed KC2Tx and not just a raw
-  /// Transaction which is useless for client.
-  Future<Transaction> getTransactionByHash(String txHash) async {
-    try {
-      Map<String, dynamic> result =
-          await callRpc('transactions_getTransaction', [txHash]);
-      return Transaction.fromJson(result);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get transactions_getTx: ${e.message}');
-      rethrow;
-    }
-  }
-
-  /// Fetch all transaction belong to the account id
-  Future<List<Transaction>> getTransactionsByAccountId(String accountId) async {
-    try {
-      List<dynamic> result =
-          await callRpc('transactions_getTransactions', [accountId]);
-      return result.map((e) => Transaction.fromJson(e)).toList();
-    } on PlatformException catch (e) {
-      debugPrint(
-          'Failed to get transactions_getTransactionsByAccountId: ${e.message}');
-      rethrow;
-    }
-  }
-
-  Future<List<Transaction>> getTransactionsByPhoneNumberHash(
-      String phoneNumberHash) async {
-    try {
-      // Cut `0x` prefix if exists
-      if (phoneNumberHash.startsWith('0x')) {
-        phoneNumberHash = phoneNumberHash.substring(2);
-      }
-
-      List<dynamic> result = await callRpc(
-          'transactions_getTransactionsByPhoneNumberHash', [phoneNumberHash]);
-      return result.map((e) => Transaction.fromJson(e)).toList();
-    } on PlatformException catch (e) {
-      debugPrint(
-          'Failed to get transactions_getTransactionsByPhoneNumberHash: ${e.message}');
-      rethrow;
-    }
-  }
-
-  getVerificationEvidence(String accountId, String username, String phoneNumber,
-      {String? byPassToken}) async {
-    try {
-      Map<String, dynamic>? result = await callRpc(
-          'verifier_verify', [accountId, username, phoneNumber, byPassToken]);
-
-      return result == null ? null : VerificationEvidence.fromJson(result);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to get verification evidence: ${e.message}');
-      rethrow;
-    }
-  }
-
-  // transactions
-
-  /// Create a new on-chain user with provided data
-  /// accountId - ss58 encoded user's public ed25519 key
-  /// userName - unique username. Must not be empty
-  /// phoneNumber - user's phone number. Including country code. Excluding leading +
-  /// Returns an (evidence, errorMessage) result.
-  ///
-  /// This method will attempt to obtain verifier evidence regarding the association between the accountId, userName and phoneNumber
-  Future<(String?, String?)> newUser(
-      String accountId, String username, String phoneNumber,
-      {VerificationEvidence? verificationEvidence}) async {
-    try {
-      // Get verification evidence if not provided
-      verificationEvidence ??= await getVerificationEvidence(
-          accountId, username, phoneNumber,
-          byPassToken: verificationBypassToken);
-
-      // Failed to get verification evidence
-      if (verificationEvidence == null) {
-        return (null, 'NoVerifierEvidence');
-      }
-
-      // Verification failed
-      if (verificationEvidence.verificationResult !=
-          VerificationResult.verified) {
-        return (null, verificationEvidence.verificationResult.toString());
-      }
-
-      final phoneNumberHash = hasher.hashString(phoneNumber);
-      final call = MapEntry(
-          'Identity',
-          MapEntry('new_user', {
-            'verifier_public_key':
-                decodeAccountId(verificationEvidence.verifierAccountId!),
-            'verifier_signature': verificationEvidence.signature,
-            'account_id': decodeAccountId(accountId),
-            'username': username,
-            'phone_number_hash': phoneNumberHash,
-          }));
-
-      return (await signAndSendTransaction(call), null);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to send signup tx: ${e.details}');
-      return (null, "FailedToSendTx");
-    }
-  }
-
-  /// Update user's phone number or user name
-  /// username - new user name. If null, user name will not be updated
-  /// phoneNumber - new phone number. If null, phone number will not be updated
-  /// One of username and phoneNumber must not be null and should be different
-  /// than current on-chain value
-  /// Returns an (evidence, errorMessage) result.
-  ///
-  /// Implementation will attempt to obtain verifier evidence regarding the association between the accountId, and the new userName or the new phoneNumber
-  Future<(String?, String?)> updateUser(String? username, String? phoneNumber,
-      {VerificationEvidence? verificationEvidence}) async {
-    try {
-      Uint8List? verifierPublicKey;
-      List<int>? verifierSignature;
-
-      // Get evidence for phone number change if not provided
-      if (phoneNumber != null && verificationEvidence == null) {
-        final userInfo = await getUserInfoByAccountId(keyring.getAccountId());
-
-        final verificationEvidence = await getVerificationEvidence(
-            userInfo!.accountId, userInfo.userName, phoneNumber,
-            byPassToken: verificationBypassToken);
-
-        // Failed to get verification evidence
-        if (verificationEvidence == null) {
-          return (null, 'NoVerifierEvidence');
-        }
-
-        // Verification failed
-        if (verificationEvidence.verificationResult !=
-            VerificationResult.verified) {
-          return (null, verificationEvidence.verificationResult.toString());
-        }
-
-        verifierPublicKey =
-            decodeAccountId(verificationEvidence.verifierAccountId!);
-        verifierSignature = verificationEvidence.signature;
-      }
-
-      final verifierPublicKeyOption = verifierPublicKey == null
-          ? const Option.none()
-          : Option.some(verifierPublicKey);
-      final verifierSignatureOption = verifierSignature == null
-          ? const Option.none()
-          : Option.some(verifierSignature);
-      final usernameOption =
-          username == null ? const Option.none() : Option.some(username);
-      final Uint8List? phoneNumberHash =
-          phoneNumber != null ? hasher.hashString(phoneNumber) : null;
-      final phoneNumberHashOption = phoneNumberHash == null
-          ? const Option.none()
-          : Option.some(phoneNumberHash);
-
-      final call = MapEntry(
-          'Identity',
-          MapEntry('update_user', {
-            'verifier_public_key': verifierPublicKeyOption,
-            'verifier_signature': verifierSignatureOption,
-            'username': usernameOption,
-            'phone_number_hash': phoneNumberHashOption,
-          }));
-
-      return (await signAndSendTransaction(call), null);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to update user: ${e.details}');
-      return (null, "FailedToSendTx");
-    }
-  }
-
-  /// Delete user from chain
-  Future<String> deleteUser() async {
-    try {
-      const call =
-          MapEntry('Identity', MapEntry('delete_user', <String, dynamic>{}));
-
-      String deleteAccountTxId = await signAndSendTransaction(call);
-      debugPrint('Account deletion tx submitted');
-      return deleteAccountTxId;
+      // As we first block time (not genesis block time),
+      // we can calculate genesis time
+      return (timestamp - blockTime).toInt();
     } catch (e) {
-      debugPrint('Failed to delete account: $e}');
+      debugPrint('Failed to get genesis time: $e');
       rethrow;
     }
   }
 
-  /// Transfer coins from local account to an account
-  Future<String> sendTransfer(String accountId, BigInt amount) async {
-    appState.txSubmissionStatus.value = TxSubmissionStatus.submitting;
+  /// Get all on-chain txs to or form an account identified by userInfo
+  @override
+  Future<FetchAppreciationsStatus> getAccountTransactions(
+      KC2UserInfo userInfo) async {
     try {
-      final call = MapEntry(
-          'Balances',
-          MapEntry('transfer', {
-            'dest': MapEntry('Id', decodeAccountId(accountId)),
-            'value': amount
-          }));
+      debugPrint('Getting all txs for account: ${userInfo.accountId}');
+      final txs = await getTransactionsByAccountId(userInfo.accountId);
 
-      String txHash = await signAndSendTransaction(call);
-      appState.txSubmissionStatus.value = TxSubmissionStatus.submitted;
-      return txHash;
-    } on PlatformException catch (e) {
-      appState.txSubmissionStatus.value = TxSubmissionStatus.error;
-      debugPrint('Failed to send transfer: ${e.details}');
-      rethrow;
+      debugPrint('Got ${txs.length} txs for account: ${userInfo.accountId}');
+
+      // (blockNumber, Block)
+      Map<String, Block> blocks = {};
+
+      int processed = 0;
+      for (final transaction in txs) {
+        try {
+          debugPrint('Processing tx $processed ...');
+          final BigInt blockNumber = transaction.blockNumber;
+          final String blockNumberString = blockNumber.toString();
+
+          Block? block = blocks[blockNumberString];
+          if (block == null) {
+            // only create a block once
+            block = Block(blockNumber: blockNumber);
+            await block.init();
+            blocks[blockNumberString] = block;
+          }
+
+          await _processTransaction(
+              hash: null,
+              userInfo: userInfo,
+              tx: transaction.rawData,
+              txEvents: transaction.transactionEvents,
+              timestamp: transaction.timestamp,
+              blockNumber: transaction.blockNumber,
+              blockIndex: transaction.blockIndex);
+          processed++;
+          debugPrint('Processed tx $processed / ${txs.length}...');
+        } catch (e) {
+          // don't throw so we can process valid txs even when one is bad
+          debugPrint('>>>>> error processing tx: $transaction $e');
+        }
+      }
+
+      debugPrint(
+          'Processed $processed / ${txs.length} txs for account: ${userInfo.accountId}');
+
+      return FetchAppreciationsStatus.fetched;
+    } catch (e) {
+      debugPrint('error fetching txs: $e');
+      return FetchAppreciationsStatus.error;
     }
   }
 
-  /// Send a new appreciation with optional charTraitId
-  /// phoneNumberHash - canonical hex string of phone number hash using blake32.
-  /// Use getPhoneNumberHash() to get hash of a number
-  /// Returns submitted transaction hash
-  /// todo: add support for sending a appreciation to a user name. To, implement, get the phone number hash from the chain for user name or id via the RPC api and send appreciation to it. No need to appreciate by accountId.
-  Future<String> sendAppreciation(String phoneNumberHash, BigInt amount,
-      int communityId, int charTraitId) async {
-    if (phoneNumberHash.startsWith('0x')) {
-      phoneNumberHash = phoneNumberHash.substring(2);
-    }
-    appState.txSubmissionStatus.value = TxSubmissionStatus.submitting;
+  // Events
 
+  /// Subscribe to account transactions and events
+  @override
+  Timer subscribeToAccountTransactions(KC2UserInfo userInfo) {
+    BigInt blockNumber = BigInt.zero;
+    return Timer.periodic(const Duration(seconds: 12), (Timer t) async {
+      try {
+        blockNumber = await _processBlock(userInfo, blockNumber);
+        // debugPrint('>>> set prev block to $blockNumber');
+      } catch (e) {
+        debugPrint('Failed to process block: $e');
+      }
+    });
+  }
+
+  // Utility
+
+  /// Returns hex string hash without a trailing '0x'
+  @override
+  String getPhoneNumberHash(String phoneNumber) {
+    if (!phoneNumber.startsWith('+')) {
+      throw ArgumentError('Phone number must be + prefixed');
+    }
+    final phoneNumberHash = hasher.hashString(phoneNumber);
+    return hex.encode(phoneNumberHash);
+  }
+
+  // Tx processing
+
+  // Implementation
+
+  Future<BigInt> _processBlock(
+      KC2UserInfo userInfo, BigInt previousBlockNumber) async {
     try {
-      final call = MapEntry(
-          'Appreciation',
-          MapEntry('appreciation', {
-            'to': MapEntry('PhoneNumberHash', hex.decode(phoneNumberHash)),
-            'amount': amount,
-            'community_id': Option.some(communityId),
-            'char_trait_id': Option.some(charTraitId),
-          }));
+      final header =
+          await karmachain.send('chain_getHeader', []).then((v) => v.result);
 
-      String txHash = await signAndSendTransaction(call);
-      appState.txSubmissionStatus.value = TxSubmissionStatus.submitted;
-      return txHash;
-    } on PlatformException catch (e) {
-      debugPrint('Failed to send appreciation: ${e.details}');
-      appState.txSubmissionStatus.value = TxSubmissionStatus.error;
+      //debugPrint('Retrieve chain head: $header');
+
+      final BigInt blockNumber = BigInt.parse(header['number']);
+
+      // Do not process same block twice
+      if (previousBlockNumber.compareTo(blockNumber) == 0) {
+        // don't we need to just process same block again?
+        debugPrint('>> block $blockNumber already processed. Skipping...');
+        return blockNumber;
+      }
+
+      debugPrint(
+          'Processing block $blockNumber. Prev block: $previousBlockNumber');
+
+      final Block block = Block(blockNumber: blockNumber);
+      await block.init();
+
+      final blockData = await karmachain
+          .send('chain_getBlock', [block.blockHash]).then((v) => v.result);
+
+      // debugPrint('Block: ${block['block']}');
+
+      final extrinsics =
+          blockData['block']['extrinsics'].map((encodedExtrinsic) {
+        final extrinsic = _decodeTransaction(Input.fromHex(encodedExtrinsic));
+        final extrinsicHash = hex.encode(Hasher.blake2b256.hash(
+            Uint8List.fromList(hex.decode(encodedExtrinsic.substring(2)))));
+
+        return MapEntry(extrinsicHash, extrinsic);
+      }).toList();
+
+      var timestamp = extrinsics
+          .firstWhere((e) =>
+              e.value['calls'].key == 'Timestamp' &&
+              e.value['calls'].value.key == 'set')
+          .value['calls']
+          .value
+          .value['now'];
+
+      if (timestamp is BigInt) {
+        timestamp = timestamp.toInt();
+      }
+
+      extrinsics.asMap().forEach((transactionIndex, e) {
+        final hash = e.key;
+        final transaction = e.value;
+
+        final transactionEvents = block.events
+            .where((event) => event.extrinsicIndex == transactionIndex)
+            .toList();
+
+        try {
+          _processTransaction(
+              hash: hash,
+              userInfo: userInfo,
+              tx: transaction,
+              txEvents: transactionEvents,
+              timestamp: timestamp,
+              blockNumber: blockNumber,
+              blockIndex: transactionIndex);
+        } catch (e) {
+          debugPrint('>>> failed block tx: $e');
+        }
+      });
+
+      return blockNumber;
+    } catch (e) {
+      debugPrint('Failed to process block: $e');
       rethrow;
     }
   }
 
-  /// Set a user to be a community admin. Only the community owner can call this method. Returns submitted transaction hash.
-  Future<String> setAdmin(int communityId, String accountId) async {
+  Map<String, dynamic> _decodeTransaction(Input input) {
+    return ExtrinsicsCodec(chainInfo: chainInfo).decode(input);
+  }
+
+  ///
+  /// Process a single kc2 tx
+  Future<void> _processTransaction({
+    // local user we are processing this tx for
+    required KC2UserInfo userInfo,
+    required Map<String, dynamic> tx,
+    required List<KC2Event> txEvents,
+    required int timestamp,
+    required String? hash,
+    required BigInt blockNumber,
+    required int blockIndex,
+  }) async {
     try {
-      final call = MapEntry(
-          'Appreciation',
-          MapEntry('set_admin', {
-            'community_id': communityId,
-            'new_admin': MapEntry('AccountId', decodeAccountId(accountId)),
-          }));
+      final String pallet = tx['calls'].key;
+      final String method = tx['calls'].value.key;
+      final args = tx['calls'].value.value;
 
-      return await signAndSendTransaction(call);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to set admin: ${e.details}');
+      final String? signer = _getTransactionSigner(tx);
+
+      if (signer == null) {
+        // debugPrint(">>> skipping unsigned tx $pallet/$method");
+        return;
+      }
+
+      /// Use provided hash or generate one if needed
+      hash ??= hex.encode(Hasher.blake2b256
+          .hash(ExtrinsicsCodec(chainInfo: chainInfo).encode(tx)));
+
+      debugPrint("Processing tx $pallet/$method. txHash: $hash");
+
+      final failedEventData = txEvents
+          .where((event) => event.eventName == 'ExtrinsicFailed')
+          .firstOrNull
+          ?.data;
+
+      final ChainError? chanError = _getChainError(failedEventData);
+      KC2Tx? transaction = await KC2Tx.getKC2Transaction(
+          tx: tx,
+          hash: hash,
+          txEvents: txEvents,
+          timestamp: timestamp,
+          blockNumber: blockNumber,
+          blockIndex: blockIndex,
+          signer: signer,
+          netId: netId,
+          chainError: chanError,
+          chainInfo: chainInfo);
+
+      if (transaction == null) {
+        debugPrint('Skipped processing tx $pallet/$method');
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2NewUserTransactionV1 &&
+          newUserCallback != null) {
+        await newUserCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2UpdateUserTxV1 &&
+          updateUserCallback != null) {
+        await updateUserCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2RemoveMetadataTxV1 &&
+          removeMetadataCallback != null) {
+        await removeMetadataCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2SetMetadataTxV1 &&
+          setMetadataCallback != null) {
+        await setMetadataCallback!(transaction);
+        return;
+      }
+
+      if (appreciationCallback != null &&
+          pallet == 'Appreciation' &&
+          method == 'appreciation') {
+        await _processAppreciationTransaction(hash, timestamp, userInfo, signer,
+            args, chanError, blockNumber, blockIndex, tx, txEvents);
+        return;
+      }
+
+      if (pallet == 'Balances' &&
+          (method == 'transfer_keep_alive' || method == 'transfer') &&
+          transferCallback != null) {
+        await _processTransferTransaction(
+            hash,
+            timestamp,
+            userInfo,
+            signer,
+            args,
+            chanError,
+            method,
+            pallet,
+            blockNumber,
+            blockIndex,
+            tx,
+            txEvents);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2JoinPoolTxV1 &&
+          joinPoolCallback != null) {
+        await joinPoolCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2ClaimPayoutTxV1 &&
+          claimPoolPayoutCallback != null) {
+        await claimPoolPayoutCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2UnbondTxV1 &&
+          unbondPoolCallback != null) {
+        await unbondPoolCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2WithdrawUnbondedTxV1 &&
+          withdrawUnbondedPoolCallback != null) {
+        await withdrawUnbondedPoolCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2CreatePoolTxV1 &&
+          createPoolCallback != null) {
+        await createPoolCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2JoinPoolTxV1 &&
+          joinPoolCallback != null) {
+        await joinPoolCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2NominateTxV1 &&
+          nominatePoolValidatorCallback != null) {
+        await nominatePoolValidatorCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2ChillTxV1 &&
+          chillPoolCallback != null) {
+        await chillPoolCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2UpdateRolesTxV1 &&
+          updatePoolRolesCallback != null) {
+        await updatePoolRolesCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2SetCommissionTxV1 &&
+          setPoolCommissionCallback != null) {
+        await setPoolCommissionCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2SetCommissionMaxTxV1 &&
+          setPoolCommissionMaxCallback != null) {
+        await setPoolCommissionMaxCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2SetCommissionChangeRateTxV1 &&
+          setPoolCommissionChangeRateCallback != null) {
+        await setPoolCommissionChangeRateCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2ClaimCommissionTxV1 &&
+          claimPoolCommissionCallback != null) {
+        await claimPoolCommissionCallback!(transaction);
+        return;
+      }
+
+      // Staking pallet
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2StakingBondTxV1 &&
+          stakingBondCallback != null) {
+        await stakingBondCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2StakingBondExtraTxV1 &&
+          stakingBondExtraCallback != null) {
+        await stakingBondExtraCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2StakingUnbondTxV1 &&
+          stakingUnbondCallback != null) {
+        await stakingUnbondCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2StakingWithdrawUnbondedTxV1 &&
+          stakingWithdrawUnbondedCallback != null) {
+        await stakingWithdrawUnbondedCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2StakingNominateTxV1 &&
+          stakingNominateCallback != null) {
+        await stakingNominateCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2StakingChillTxV1 &&
+          stakingChillCallback != null) {
+        await stakingChillCallback!(transaction);
+        return;
+      }
+
+      if (signer == userInfo.accountId &&
+          transaction is KC2StakingPayoutStakersTxV1 &&
+          stakingPayoutStakersCallback != null) {
+        await stakingPayoutStakersCallback!(transaction);
+        return;
+      }
+
+    } catch (e) {
+      debugPrint('error processing tx: $e');
+    }
+  }
+
+  /// Returns transaction's signer address.
+  /// Return null if the transaction is unsigned.
+  String? _getTransactionSigner(Map<String, dynamic> extrinsic) {
+    final signature = extrinsic['signature'];
+    if (signature == null) {
+      return null;
+    }
+    final address = signature['address'].value;
+    if (address == null) {
+      return null;
+    }
+
+    return encodeAccountId(address.cast<int>());
+  }
+
+  Future<void> _processAppreciationTransaction(
+      String hash,
+      int timestamp,
+      KC2UserInfo userInfo,
+      String signer,
+      Map<String, dynamic> args,
+      ChainError? chainError,
+      BigInt blockNumber,
+      int blockIndex,
+      Map<String, dynamic> rawData,
+      List<KC2Event> txEvents) async {
+    try {
+      // we preprocess the tx below before creating the tx object and enriching it so we avoid rpc calls for block appreciations which are not to or from the local user
+
+      final bool txFromUser = signer == userInfo.accountId;
+
+      final to = args['to'];
+      final accountIdentityType = to.key;
+      final accountIdentityValue = to.value;
+
+      String? toAccountId;
+      String? toUserName;
+      String? toPhoneNumberHash;
+
+      // Extract one of the destination fields from the tx and return early in case userInfo is not sender or receiver of the tx
+      switch (accountIdentityType) {
+        case 'AccountId':
+          toAccountId = encodeAccountId(accountIdentityValue.cast<int>());
+          if (toAccountId != userInfo.accountId && !txFromUser) {
+            debugPrint('user is not sender or receiver accountId');
+            return;
+          }
+          break;
+        case 'Username':
+          toUserName = accountIdentityValue;
+          if (toUserName != userInfo.userName && !txFromUser) {
+            debugPrint('user is not sender or receiver userName');
+            return;
+          }
+          break;
+        case "PhoneNumberHash":
+        default:
+          toPhoneNumberHash = hex.encode(accountIdentityValue.cast<int>());
+          if (toPhoneNumberHash != userInfo.phoneNumberHash && !txFromUser) {
+            debugPrint('user is not sender or receiver phoneNumberHash');
+            return;
+          }
+          break;
+      }
+
+      KC2AppreciationTxV1 appreciation =
+          await KC2AppreciationTxV1.createAppreciationTx(
+              hash: hash,
+              timestamp: timestamp,
+              signer: signer,
+              args: args,
+              chainError: chainError,
+              blockNumber: blockNumber,
+              blockIndex: blockIndex,
+              rawData: rawData,
+              txEvents: txEvents,
+              netId: netId);
+
+      await appreciation.enrichForUser(userInfo);
+
+      if (appreciationCallback != null) {
+        await appreciationCallback!(appreciation);
+      } else {
+        debugPrint('No registered appreciation callback');
+      }
+    } catch (e) {
+      debugPrint(">>> error processing appreciation tx: $e");
       rethrow;
     }
   }
 
-  // events
+  /*
+  void _processSetAdminTransaction(
+      String hash,
+      BigInt timeStamp,
+      String address,
+      String? signer,
+      Map<String, dynamic> args,
+      MapEntry<String, Object?>? failedReason) async {
+    final communityId = args['community_id'];
+    final newAdmin = args['new_admin'];
 
-  /// Subscribe to account-related transactions
-  /// accountId - ss58 encoded address
-  /// Events will be delivered to registered event handlers
-  Timer subscribeToAccount(String accountId);
+    final accountIdentityType = newAdmin.key;
+    final accountIdentityValue = newAdmin.value;
+    String accountId;
 
-  /// Get all transactions from chain to, or from an account
-  /// Transactions will be sent to registered event handlers based on their type
-  /// accountId - ss58 encoded address
-  Future<FetchAppreciationsStatus> processTransactions(String accountId);
+    switch (accountIdentityType) {
+      case 'AccountId':
+        accountId = encodeAccountId(accountIdentityValue.cast<int>());
+        break;
+      case 'Username':
+        final result = await getUserInfoByUsername(accountIdentityValue);
+        accountId = result?['account_id'];
+        break;
+      default:
+        final phoneNumberHashHex = hex.encode(accountIdentityValue.cast<int>());
+        final result = await getUserInfoByPhoneNumberHash(phoneNumberHashHex);
+        accountId = result?['account_id'];
+        break;
+    }
 
-  // helpers
+    /*
+    if (signer == address || accountId == address) {
+      eventsHandler.onSetAdmin(
+          metadata, signer, communityId, accountId, failedReason);
+    }*/
+  }*/
 
-  /// Get canonical hex string hash of a phone number
-  /// phoneNumber - international phone number without leading '+'
-  /// When a leading '+' is included - it will be removed prior to hashing.
-  String getPhoneNumberHash(String phoneNumber);
+  /// Process a coin transfer tx from a block
+  Future<void> _processTransferTransaction(
+      String hash,
+      int timestamp,
+      KC2UserInfo userInfo,
+      String signer,
+      Map<String, dynamic> args,
+      ChainError? chainError,
+      String method,
+      String pallet,
+      BigInt blockNumber,
+      int blockIndex,
+      Map<String, dynamic> rawData,
+      List<KC2Event> txEvents) async {
+    try {
+      final toAddress = encodeAccountId(args['dest'].value.cast<int>());
+      if (signer != userInfo.accountId && toAddress == userInfo.accountId) {
+        // sender or receiver is not local user - skip this transfer
+        return;
+      }
 
-  // available client txs callbacks
+      debugPrint('Transfer tx time: $timestamp');
 
-  /// Callback when a new user transaction is processed for local user
-  NewUserCallback? newUserCallback;
+      String fromUserName = '';
+      String toUserName = '';
 
-  /// Local user's account data update
-  UpdateUserCallback? updateUserCallback;
+      // enrich sender and receiver's user name from api
+      if (signer == userInfo.accountId) {
+        fromUserName = userInfo.userName;
+        final res = await getUserInfoByAccountId(toAddress);
+        if (res != null) {
+          toUserName = res.userName;
+        } else {
+          debugPrint('>> failed to get user info by accountId: $toAddress');
+        }
+      } else {
+        toUserName = userInfo.userName;
+        final res = await getUserInfoByAccountId(signer);
+        if (res != null) {
+          fromUserName = res.userName;
+        } else {
+          debugPrint('>> failed to get user info by accountId: $signer');
+        }
+      }
 
-  // TODO: deleteUserCallback
+      final KC2TransferTxV1 transferTx =
+          KC2TransferTxV1.createTransferTransaction(
+              hash: hash,
+              timestamp: timestamp,
+              signer: signer,
+              args: args,
+              chainError: chainError,
+              blockNumber: blockNumber,
+              blockIndex: blockIndex,
+              rawData: rawData,
+              txEvents: txEvents,
+              fromUserName: fromUserName,
+              toUserName: toUserName,
+              netId: netId);
 
-  /// A transfer to or from local user
-  TransferCallback? transferCallback;
+      if (transferCallback != null) {
+        transferCallback!(transferTx);
+      }
+    } catch (e) {
+      debugPrint('error processing transfer tx: $e');
+      rethrow;
+    }
+  }
 
-  /// An appreciation to or from local user
-  AppreciationCallback? appreciationCallback;
+  ChainError? _getChainError(Map<String, dynamic>? failure) {
+    if (failure == null) {
+      return null;
+    }
 
-  // TODO: setAdminCallback
+    // Default substrate error decoded in other way by polkadart
+    if (failure['dispatch_error']?.value.runtimeType == String) {
+      // No way to provide additional description
+      return ChainError(failure['dispatch_error']?.value, null);
+    }
+
+    final moduleIndex = failure['dispatch_error']?.value['index'];
+    final errorIndex = failure['dispatch_error']?.value['error'][0];
+    debugPrint('Process error module $moduleIndex error $errorIndex');
+
+    final codecTypeId = decodedMetadata
+        .metadata['pallets'][moduleIndex]['errors'].value['type'];
+    debugPrint('Codec type id: $codecTypeId');
+
+    final codecSchema = decodedMetadata.metadata['lookup']['types']
+        .firstWhere((e) => e['id'] == codecTypeId);
+
+    final errorMetadata =
+        codecSchema['type']['def'].value['variants'][errorIndex];
+    debugPrint('Error metadata: $errorMetadata');
+
+    return ChainError.fromSubstrateMetadata(errorMetadata);
+  }
+
+  @override
+  NominationPoolsConfiguration get poolsConfiguration => _poolsConfiguration!;
 }

@@ -2,7 +2,7 @@ typedef EraIndex = int;
 
 /// A record of the nominations made by a specific account.
 class Nominations {
-  /// The targets of nomination. @HolyGrease - are these validator accountIds?
+  /// The targets of nomination.
   List<String> targets;
 
   /// The era the nominations were submitted.
@@ -24,13 +24,15 @@ class Nominations {
 
 /// Preference of what happens regarding validation.
 class ValidatorPrefs {
-  /// Validator account id
+  /// Validator account id.
   String accountId;
 
-  /// Reward that validator takes up-front; only the rest is split between themselves and nominators.
+  /// Reward that validator takes up-front; only the rest is split between themselves and nominators. [0,...,1B]
   int commission;
 
-  /// Whether or not this validator is accepting more nominations. If `true`, then no nominator who is not already nominating this validator may nominate them. By default, validators are accepting nominations.
+  /// Whether or not this validator is accepting more nominations.
+  /// If `true`, then no nominator who is not already nominating this validator may nominate them.
+  /// By default, validators are accepting nominations.
   bool blocked;
 
   ValidatorPrefs(this.accountId, this.commission, this.blocked);
@@ -39,4 +41,22 @@ class ValidatorPrefs {
       : accountId = json['account_id'],
         commission = json['commission'],
         blocked = json['blocked'];
+}
+
+/// A destination account for payment.
+enum RewardDestination {
+  /// Pay into the stash account, increasing the amount at stake accordingly.
+  staked,
+
+  /// Pay into the stash account, not increasing the amount at stake.
+  stash,
+
+  /// Pay into the controller account.
+  controller,
+
+  /// Pay into a specified account.
+  account,
+
+  /// Receive no reward.
+  none,
 }

@@ -1,18 +1,20 @@
 import 'dart:async';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:karma_coin/common_libs.dart';
-import 'package:karma_coin/logic/identity.dart';
-import 'package:karma_coin/logic/identity_interface.dart';
-import 'package:karma_coin/services/v2.0/kc2.dart';
-import 'package:karma_coin/services/v2.0/kc2_service.dart';
+import 'package:karma_coin/logic/verifier.dart';
+import 'package:karma_coin/services/v2.0/kc2_service_interface.dart';
 import 'package:karma_coin/services/v2.0/types.dart';
-
-final random = Random.secure();
-String get randomPhoneNumber => (random.nextInt(900000) + 100000).toString();
+import 'utils.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  WidgetsFlutterBinding.ensureInitialized();
+  FlutterSecureStorage.setMockInitialValues({});
+
   GetIt.I.registerLazySingleton<K2ServiceInterface>(() => KarmachainService());
-  K2ServiceInterface kc2Service = GetIt.I.get<K2ServiceInterface>();
+  GetIt.I.registerLazySingleton<Verifier>(() => Verifier());
+  GetIt.I.registerLazySingleton<ConfigLogic>(() => ConfigLogic());
 
   group(
     'get contacts tests',
@@ -24,93 +26,36 @@ void main() {
 
           // Allow to run this test multiply times on same chain
           String prefix = randomPhoneNumber.substring(0, 5).toLowerCase();
-
-          IdentityInterface tom = Identity();
-          await tom.initNoStorage();
-          String tomUserName =
-              "${prefix}Tom${tom.accountId.substring(0, 5)}".toLowerCase();
-          String tomPhoneNumber = randomPhoneNumber;
-
-          IdentityInterface tomas = Identity();
-          await tomas.initNoStorage();
-          String tomasUserName =
-              "${prefix}Tomas${tomas.accountId.substring(0, 5)}".toLowerCase();
-          String tomasPhoneNumber = randomPhoneNumber;
-
-          IdentityInterface tor = Identity();
-          await tor.initNoStorage();
-          String torUserName =
-              "${prefix}Tor${tor.accountId.substring(0, 5)}".toLowerCase();
-          String torPhoneNumber = randomPhoneNumber;
-
-          IdentityInterface platon = Identity();
-          await platon.initNoStorage();
-          String platonUserName =
-              "${prefix}Platon${platon.accountId.substring(0, 5)}.toLowerCase()";
-          String platonPhoneNumber = randomPhoneNumber;
-
-          int counter = 0;
           final completer = Completer<bool>();
+          TestUserInfo tom = await createTestUser(
+              completer: completer, usernamePrefix: "${prefix}Tom");
+          TestUserInfo tomas = await createTestUser(
+              completer: completer, usernamePrefix: "${prefix}Tomas");
+          TestUserInfo tor = await createTestUser(
+              completer: completer, usernamePrefix: "${prefix}Tor");
+          TestUserInfo platon = await createTestUser(
+              completer: completer, usernamePrefix: "${prefix}Platon");
+          // Wait for all users created
+          await Future.delayed(Duration(seconds: kc2Service.expectedBlockTimeSeconds));
 
-          kc2Service.newUserCallback = (tx) async {
-            debugPrint('>> new user callback called');
-            if (tx.failedReason != null) {
-              completer.complete(false);
-              return;
-            }
+          debugPrint('Getting contacts...');
+          List<Contact> contacts = await kc2Service.getContacts('${prefix}to');
+          debugPrint('Got ${contacts.length} contacts');
+          expect(contacts.length, 3);
+          expect(contacts.any((contact) => contact.userName == tom.userName),
+              isTrue);
+          expect(contacts.any((contact) => contact.userName == tomas.userName),
+              isTrue);
+          expect(contacts.any((contact) => contact.userName == tor.userName),
+              isTrue);
+          expect(
+              contacts.any((contacts) => contacts.userName == platon.userName),
+              isFalse);
 
-            counter++;
+          contacts = await kc2Service.getContacts('nothing');
+          expect(contacts.length, 0);
 
-            // Creating 4 user: Tom, Tomas, Tor, Platon
-            switch (counter) {
-              case 1:
-                kc2Service.setKeyring(tomas.keyring);
-                kc2Service.subscribeToAccount(tomas.accountId);
-                await kc2Service.newUser(
-                    tomas.accountId, tomasUserName, tomasPhoneNumber);
-              case 2:
-                kc2Service.setKeyring(tor.keyring);
-                kc2Service.subscribeToAccount(tor.accountId);
-                await kc2Service.newUser(
-                    tor.accountId, torUserName, torPhoneNumber);
-              case 3:
-                kc2Service.setKeyring(platon.keyring);
-                kc2Service.subscribeToAccount(platon.accountId);
-                await kc2Service.newUser(
-                    platon.accountId, platonUserName, platonPhoneNumber);
-              // When all users created
-              case 4:
-                debugPrint('Getting contacts...');
-                List<Contact> contacts =
-                    await kc2Service.getContacts('${prefix}to');
-                debugPrint('Got ${contacts.length} contacts');
-                expect(contacts.length, 3);
-                expect(
-                    contacts.any((contact) => contact.userName == tomUserName),
-                    isTrue);
-                expect(
-                    contacts
-                        .any((contact) => contact.userName == tomasUserName),
-                    isTrue);
-                expect(
-                    contacts.any((contact) => contact.userName == torUserName),
-                    isTrue);
-                expect(
-                    contacts
-                        .any((contacts) => contacts.userName == platonUserName),
-                    isFalse);
-
-                contacts = await kc2Service.getContacts('XXXXXXXX');
-                expect(contacts.length, 0);
-
-                completer.complete(true);
-            }
-          };
-
-          kc2Service.setKeyring(tom.keyring);
-          kc2Service.subscribeToAccount(tom.accountId);
-          await kc2Service.newUser(tom.accountId, tomUserName, tomPhoneNumber);
-
+          completer.complete(true);
           // wait for completer and verify test success
           expect(await completer.future, equals(true));
           expect(completer.isCompleted, isTrue);
@@ -125,73 +70,25 @@ void main() {
 
           // Allow to run this test multiply times on same chain
           String prefix = randomPhoneNumber.substring(0, 5);
-
-          IdentityInterface tom = Identity();
-          await tom.initNoStorage();
-          String tomUserName = "${prefix}Tom${tom.accountId.substring(0, 5)}";
-          String tomPhoneNumber = randomPhoneNumber;
-
-          IdentityInterface tomas = Identity();
-          await tomas.initNoStorage();
-          String tomasUserName =
-              "${prefix}Tomas${tomas.accountId.substring(0, 5)}";
-          String tomasPhoneNumber = randomPhoneNumber;
-
-          IdentityInterface tor = Identity();
-          await tor.initNoStorage();
-          String torUserName = "${prefix}Tor${tor.accountId.substring(0, 5)}";
-          String torPhoneNumber = randomPhoneNumber;
-
-          IdentityInterface platon = Identity();
-          await platon.initNoStorage();
-          String platonUserName =
-              "${prefix}Platon${platon.accountId.substring(0, 5)}";
-          String platonPhoneNumber = randomPhoneNumber;
-
-          int counter = 0;
           final completer = Completer<bool>();
+          await createTestUser(
+              completer: completer, usernamePrefix: "${prefix}Tom");
+          await createTestUser(
+              completer: completer, usernamePrefix: "${prefix}Tomas");
+          await createTestUser(
+              completer: completer, usernamePrefix: "${prefix}Tor");
+          await createTestUser(
+              completer: completer, usernamePrefix: "${prefix}Platon");
+          // Wait for all users created
+          await Future.delayed(Duration(seconds: kc2Service.expectedBlockTimeSeconds));
 
-          kc2Service.newUserCallback = (tx) async {
-            debugPrint('>> new user callback called');
-            if (tx.failedReason != null) {
-              completer.complete(false);
-              return;
-            }
+          final contacts =
+              await kc2Service.getContacts(prefix, fromIndex: 1, limit: 1);
+          expect(contacts.length, 1);
+          // There is no way to check accounts presents, because accounts
+          // order in chain storage is unknown
 
-            counter++;
-
-            // Creating 4 user: Tom, Tomas, Tor, Platon
-            switch (counter) {
-              case 1:
-                kc2Service.setKeyring(tomas.keyring);
-                kc2Service.subscribeToAccount(tomas.accountId);
-                await kc2Service.newUser(
-                    tomas.accountId, tomasUserName, tomasPhoneNumber);
-              case 2:
-                kc2Service.setKeyring(tor.keyring);
-                kc2Service.subscribeToAccount(tor.accountId);
-                await kc2Service.newUser(
-                    tor.accountId, torUserName, torPhoneNumber);
-              case 3:
-                kc2Service.setKeyring(platon.keyring);
-                kc2Service.subscribeToAccount(platon.accountId);
-                await kc2Service.newUser(
-                    platon.accountId, platonUserName, platonPhoneNumber);
-              // When all users created
-              case 4:
-                final contacts = await kc2Service.getContacts(prefix,
-                    fromIndex: 1, limit: 1);
-                expect(contacts.length, 1);
-                // There is no way to check accounts presents, because accounts
-                // order in chain storage is unknown
-
-                completer.complete(true);
-            }
-          };
-
-          kc2Service.setKeyring(tom.keyring);
-          kc2Service.subscribeToAccount(tom.accountId);
-          await kc2Service.newUser(tom.accountId, tomUserName, tomPhoneNumber);
+          completer.complete(true);
 
           // wait for completer and verify test success
           expect(await completer.future, equals(true));

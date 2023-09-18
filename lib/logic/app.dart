@@ -14,8 +14,10 @@ import 'package:karma_coin/logic/user.dart';
 import 'package:karma_coin/logic/user_interface.dart';
 import 'package:karma_coin/logic/user_name_availability.dart';
 import 'package:karma_coin/logic/verifier.dart';
-import 'package:karma_coin/services/v2.0/kc2.dart';
 import 'package:karma_coin/services/v2.0/kc2_service.dart';
+import 'package:karma_coin/services/v2.0/kc2_service_interface.dart';
+
+export 'package:karma_coin/services/v2.0/kc2_service.dart';
 
 /// Add syntax sugar for quickly accessing the main "logic" controllers in the app
 KC2AppLogic get appLogic => GetIt.I.get<KC2AppLogic>();
@@ -25,7 +27,6 @@ Verifier get verifier => GetIt.I.get<Verifier>();
 ConfigLogic get configLogic => GetIt.I.get<ConfigLogic>();
 
 AuthLogicInterface get authLogic => GetIt.I.get<AuthLogicInterface>();
-// AccountLogicInterface get accountLogic => GetIt.I.get<AccountLogic>();
 
 UserNameAvailabilityLogic get userNameAvailabilityLogic =>
     GetIt.I.get<UserNameAvailabilityLogic>();
@@ -70,10 +71,10 @@ class KC2AppLogic with KC2AppLogicInterface {
 
     GetIt.I.registerLazySingleton<AuthLogicInterface>(() => AuthLogic());
     GetIt.I.registerLazySingleton<KC2UserInteface>(() => KC2User());
-    
+
     GetIt.I.registerLazySingleton<UserNameAvailabilityLogic>(
         () => UserNameAvailabilityLogic());
-    
+
     GetIt.I.registerLazySingleton<AppState>(() => AppState());
     GetIt.I
         .registerLazySingleton<K2ServiceInterface>(() => KarmachainService());
@@ -106,11 +107,12 @@ class KC2AppLogic with KC2AppLogicInterface {
     await configLogic.init();
 
     // Int the auth logic
+    /*
     await authLogic.init();
 
     if (authLogic.isUserAuthenticated()) {
       debugPrint('user is Firebase authenticated on app startup');
-    }
+    }*/
 
     // connect ws to a kc2 api provider configured in settings
     try {
@@ -119,8 +121,12 @@ class KC2AppLogic with KC2AppLogicInterface {
       debugPrint('failed to connect to kc2 api: $e');
     }
 
-    // Initialize kc2 user eraly. In case of account restore - get rid of this user and init a new one from mnemonic.
-    await kc2User.init();
+    if (!configLogic.dashMode) {
+      // Initialize kc2 user eraly. In case of account restore - get rid of this user and init a new one from mnemonic.
+      await kc2User.init();
+    } else {
+      kc2User.identity.initNoStorage();
+    }
 
     // setup push notes (but don't wait on it per docs)
     // configLogic.setupPushNotifications();

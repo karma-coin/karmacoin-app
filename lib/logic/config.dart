@@ -1,9 +1,9 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:karma_coin/common_libs.dart';
 import 'package:karma_coin/common/platform_info.dart';
+import 'package:yaml/yaml.dart';
 
-// TODO: add ConfigLogic public interface
+// todo: add ConfigLogic public interface
 
 enum KCNetworkType {
   testnet(42),
@@ -30,10 +30,13 @@ class ConfigLogic {
   /// dev mode has some text field input shortcuts to save time in dev
   final bool devMode = true;
 
+  /// in dash mode app displayes public chain data and doesn't require user to sign-in
+  final bool dashMode = false;
+
   /// Defaults to testnet. Change this if user specifies to change between testnet and mainnet. and call init() again to configure connection to mainnet and vice versa when moving from mainnet to testnet... In production app once mainnent is live, the default should be mainnet
   KCNetworkType networkId = KCNetworkType.testnet;
 
-  /// Skip whatsapp verification for local testing. kc2Api should use the bypass token
+  /// Skip whatsapp verification for local app testing. kc2Api should use the bypass token
   /// obtain from local config file to bypass whatsapp verification.
   final bool skipWhatsappVerification = true;
 
@@ -51,14 +54,17 @@ class ConfigLogic {
   late final apiHostName = ValueNotifier<String>('127.0.0.1');
   late final apiHostPort = ValueNotifier<int>(9080);
   late final apiProtocol = ValueNotifier<String>('ws');
-  late final verifierHostName = ValueNotifier<String>('127.0.0.1');
-  late final verifierHostPort = ValueNotifier<int>(9080);
-  late final verifierSecureConnection = ValueNotifier<bool>(false);
+  late final verifierHostName = ValueNotifier<String>('verifier1.karmaco.in');
+  late final verifierHostPort = ValueNotifier<int>(443);
+  late final verifierSecureConnection = ValueNotifier<bool>(true);
 
   // Public key of the verifier account id
   // Client should only accept verifier responses signed by this account
-  late final verifierAccountId = ValueNotifier<String>(
+  late final vieriferPublicKey = ValueNotifier<String>(
       'fe9d0c0df86c72ae733bf9ec0eeaff6e43e29bad4488f5e4845e455ea1095bf3');
+
+  late final verifierAccountId =
+      ValueNotifier<String>('5EUH4CC5czdqfXbgE1fLkXcqMos1thxJSaj93J6N5bSareuz');
 
   late final learnYoutubePlaylistUrl =
       'https://www.youtube.com/playlist?list=PLF4zx8ioKJTszWMz1MKiHwStfMCdxh8MP';
@@ -93,6 +99,12 @@ class ConfigLogic {
     karmaMiningScreenDisplayed.value = value;
   }
 
+  /// Load optional test config
+  Future<dynamic> getTestConfig() async {
+    final yamlString = await rootBundle.loadString('assets/private_config.yaml');
+    return loadYaml(yamlString);
+  }
+
   /// Call this everytime network is changed from the ui. e.g. a switch between mainnet to testnet...
   Future<void> init() async {
     if (apiLocalMode) {
@@ -104,17 +116,12 @@ class ConfigLogic {
         debugPrint('Running in Android emulator');
         // on android emulator, use the host machine ip address
         apiHostName.value = '10.0.2.2';
-        verifierHostName.value = '10.0.2.2';
       } else {
         apiHostName.value = '127.0.0.1';
-        verifierHostName.value = '127.0.0.1';
       }
 
       apiHostPort.value = 9944;
-      verifierHostPort.value = 8080;
       apiProtocol.value = 'ws';
-
-      verifierSecureConnection.value = false;
     } else {
       switch (networkId) {
         case KCNetworkType.testnet:
@@ -124,19 +131,19 @@ class ConfigLogic {
           apiProtocol.value = 'wss';
           //
           // verifier info for testnet
-          verifierHostName.value = 'api.karmaco.in';
+          verifierHostName.value = 'verifier1.karmaco.in';
           verifierHostPort.value = 443;
           verifierSecureConnection.value = true;
           break;
         case KCNetworkType.mainnet:
           debugPrint('Working against a remote kc2 mainnet api provider');
-          // TODO: add mainnet api node here
+          // todo: add mainnet api node here
           apiHostName.value = '[add mainnent public api node here]';
           apiHostPort.value = 80;
           apiProtocol.value = 'wss';
           //
           // verifier info for mainnet
-          verifierHostName.value = 'api.karmaco.in';
+          verifierHostName.value = 'verifier1.karmaco.in';
           verifierHostPort.value = 443;
           verifierSecureConnection.value = true;
           break;
@@ -165,7 +172,7 @@ class ConfigLogic {
   String get kc2ApiUrl =>
       '${apiProtocol.value}://${apiHostName.value}:${apiHostPort.value}';
 
-  // TODO: completely revamp push notes to new auth scheme
+  // todo: completely revamp push notes to new auth scheme
 
   // push notificaiton handling
   ////////////////////
@@ -313,7 +320,7 @@ class ConfigLogic {
   void _handleMessage(RemoteMessage message) {
     debugPrint('Got push notification: $message');
 
-    // TODO: get all transactions and show appreciations screen
+    // todo: get all transactions and show appreciations screen
 
     Future.delayed(Duration.zero, () async {
       await FirebaseAnalytics.instance.logEvent(name: "push_note_received");

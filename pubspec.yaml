@@ -57,6 +57,7 @@ dependencies:
   firebase_messaging: ^14.6.5
   cloud_firestore: ^4.8.3
   cloud_functions: ^4.3.4
+
   hex: ^0.2.0
   path_provider: ^2.0.11
   quiver: ^3.2.1
@@ -89,6 +90,7 @@ dependencies:
   random_avatar: ^0.0.8
   collection: ^1.17.1
   http: ^0.13.6
+  yaml: ^3.1.2
 
 dev_dependencies:
   flutter_test:
@@ -117,6 +119,7 @@ flutter:
     - assets/images/giraffes_tile.png
     - assets/images/giraffes_banner.png
     - assets/ca/lets-encrypt-r3.pem
+    - assets/private_config.yaml
     
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/assets-and-images/#resolution-aware

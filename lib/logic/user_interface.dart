@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'package:karma_coin/common_libs.dart';
 import 'package:karma_coin/logic/identity_interface.dart';
-import 'package:karma_coin/services/v2.0/kc2_service.dart';
+import 'package:karma_coin/services/v2.0/kc2_service_interface.dart';
+import 'package:karma_coin/services/v2.0/nomination_pools/interfaces.dart';
 import 'package:karma_coin/services/v2.0/txs/tx.dart';
 import 'package:karma_coin/services/v2.0/user_info.dart';
 
@@ -19,7 +20,7 @@ enum SignupFailureReason {
   usernameTaken,
   invalidData,
   serverError,
-  connectionTimeOut,
+  connectionTimeout,
   accountMismatch;
 }
 
@@ -32,7 +33,49 @@ enum UpdateResult {
   invalidSignature,
   serverError,
   accountMismatch,
-  connectionTimeOut;
+  connectionTimeout;
+}
+
+enum SetMetadataStatus {
+  unknown,
+  updating,
+  updated,
+  invalidData,
+  invalidSignature,
+  serverError,
+  connectionTimeout;
+}
+
+enum CreatePoolStatus {
+  unknown,
+  creating,
+  created,
+  invalidData,
+  invalidSignature,
+  serverError,
+  connectionTimeout,
+  userMemberOfAnotherPool,
+}
+
+enum JoinPoolStatus {
+  unknown,
+  joining,
+  joined,
+  invalidData,
+  invalidSignature,
+  serverError,
+  connectionTimeout;
+}
+
+// Submitted tx status. e.g. claim pool payout
+enum SubmitTransactionStatus {
+  unknown,
+  submitting,
+  submitted,
+  invalidSignature,
+  invalidData,
+  serverError,
+  connectionTimeout;
 }
 
 /// Usage patterns:
@@ -56,6 +99,31 @@ abstract class KC2UserInteface {
 
   /// Last known signup failure reason
   SignupFailureReason signupFailureReson = SignupFailureReason.unknown;
+
+  /// Observable set metadata status
+  final ValueNotifier<SetMetadataStatus> setMetadataStatus =
+      ValueNotifier(SetMetadataStatus.unknown);
+
+  /// Observable create pool status
+  final ValueNotifier<CreatePoolStatus> createPoolStatus =
+      ValueNotifier(CreatePoolStatus.unknown);
+
+  final ValueNotifier<SubmitTransactionStatus> claimPayoutStatus =
+      ValueNotifier(SubmitTransactionStatus.unknown);
+
+  final ValueNotifier<SubmitTransactionStatus> leavePoolStatus =
+      ValueNotifier(SubmitTransactionStatus.unknown);
+
+  /// Observable pool membership
+  final ValueNotifier<PoolMember?> poolMembership = ValueNotifier(null);
+
+  /// Observable pool claimable amount
+  final ValueNotifier<BigInt> poolClaimableRewardAmount =
+      ValueNotifier(BigInt.zero);
+
+  /// Observable join pool status
+  final ValueNotifier<JoinPoolStatus> joinPoolStatus =
+      ValueNotifier(JoinPoolStatus.unknown);
 
   /// Observeable txs fetching status
   final ValueNotifier<FetchAppreciationsStatus> fetchAppreciationStatus =
@@ -94,9 +162,36 @@ abstract class KC2UserInteface {
   /// returns true if (account id, phone number, user name) exists on chain
   Future<bool> isAccountOnchain(String userName, String phoneNumber);
 
-  /// Update user name and/or phone number - register on observables iserInfo and updateResult for flow control.
+  /// Update user name and/or phone number - register on observables userInfo and updateResult for flow control.
   Future<void> updateUserInfo(
-      String? requestedUserName, String? requestedPhoneNumber);
+      {String? requestedUserName, String? requestedPhoneNumber});
+
+  /// Set user metadata
+  Future<void> setMetadata(String metadata);
+
+  // Claim earned pool payout
+  Future<void> claimPoolPayout();
+
+  /// Create a mining pool
+  Future<void> createPool(
+      {required BigInt amount,
+      required String root,
+      required String nominator,
+      required String bouncer});
+
+  /// Join a mining pool
+  Future<void> joinPool({required BigInt amount, required int poolId});
+
+  /// Unbound amount and make it withdrawable. User will still be a pool member
+  /// Amount will be withdrawable after the pool's unbonding period using withdrawPoolBondedAmount
+  Future<void> unboundPoolBondedAmount();
+
+  /// After this call completes w/o error user will not be a member of the pool
+  Future<void> withdrawPoolUnboundedAmount();
+
+  /// Returns the timestamp in milliseconds of the last unbound amount call if any. Returns null if no unbound amount call was made.
+  /// (timeStamp, poolId)
+  (int, int) get lastUnboundPoolData;
 
   /// Delete user from karmachain. This will delete all user's data from the chain and local store and will sign out the user. Don't use this user object after calling this method.
   Future<void> deleteUser();
@@ -128,7 +223,7 @@ abstract class KC2UserInteface {
         return 'Invalid data.';
       case SignupFailureReason.accountMismatch:
         return 'Account Id mismatch.';
-      case SignupFailureReason.connectionTimeOut:
+      case SignupFailureReason.connectionTimeout:
         return 'Connection timed out.';
       default:
         return 'Signup error.';
